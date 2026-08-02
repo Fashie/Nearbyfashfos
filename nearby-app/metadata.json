@@ -1,0 +1,6 @@
+{
+  "name": "Nearby",
+  "description": "A locational social network that helps physical neighbors connect face-to-face. Features proximity neighbor search, active stories, Snapchat-style public profiles, and Instagram-style messaging with live audio/video calls.",
+  "requestFramePermissions": ["camera", "microphone", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

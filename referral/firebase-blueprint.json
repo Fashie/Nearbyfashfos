@@ -1,0 +1,91 @@
+{
+  "entities": {
+    "users": {
+      "title": "User",
+      "description": "User profile and reward standings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "avatar": { "type": "string" },
+        "referralCode": { "type": "string" },
+        "referralLink": { "type": "string" },
+        "verifiedInvites": { "type": "number" },
+        "pendingInvites": { "type": "number" },
+        "totalEarningsNaira": { "type": "number" },
+        "claimableBalanceNaira": { "type": "number" },
+        "isAmbassador": { "type": "boolean" },
+        "claimedMilestones": { "type": "array", "items": { "type": "number" } },
+        "badges": { "type": "array", "items": { "type": "string" } },
+        "teamId": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "referralCode"]
+    },
+    "teams": {
+      "title": "Team",
+      "description": "Campus 5-member challenge teams",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "creatorId": { "type": "string" },
+        "creatorName": { "type": "string" },
+        "totalVerifiedInvites": { "type": "number" },
+        "inviteCode": { "type": "string" },
+        "members": { "type": "array" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "creatorId", "inviteCode"]
+    },
+    "payouts": {
+      "title": "Payout Request",
+      "description": "User bank withdrawal requests",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "amountNaira": { "type": "number" },
+        "bankName": { "type": "string" },
+        "accountName": { "type": "string" },
+        "accountNumber": { "type": "string" },
+        "status": { "type": "string" },
+        "requestedAt": { "type": "string" },
+        "reference": { "type": "string" }
+      },
+      "required": ["id", "userId", "amountNaira", "bankName", "accountNumber"]
+    },
+    "qrcodes": {
+      "title": "Treasure QR Code",
+      "description": "Campus treasure hunt physical QR posters",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "campusName": { "type": "string" },
+        "locationHint": { "type": "string" },
+        "monthNumber": { "type": "number" },
+        "isRedeemed": { "type": "boolean" },
+        "redeemedBy": { "type": "string" },
+        "redeemedAt": { "type": "string" }
+      },
+      "required": ["id", "code", "campusName"]
+    },
+    "invitedFriends": {
+      "title": "Invited Friend",
+      "description": "Referrals invited by user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "referrerId": { "type": "string" },
+        "name": { "type": "string" },
+        "campus": { "type": "string" },
+        "status": { "type": "string" },
+        "step": { "type": "string" },
+        "date": { "type": "string" }
+      },
+      "required": ["id", "referrerId", "name"]
+    }
+  }
+}

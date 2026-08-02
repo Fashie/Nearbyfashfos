@@ -1,0 +1,16 @@
+[build]
+  command = "npm install && npm run build && cd ../referral && npm install && npm run build && cd ../landing && mkdir -p dist/referralgames && cp -r ../referral/dist/* dist/referralgames/"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[[redirects]]
+  from = "/referralgames/*"
+  to = "/referralgames/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

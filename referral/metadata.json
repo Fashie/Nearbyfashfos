@@ -1,0 +1,6 @@
+{
+  "name": "FashFOS - Nearby Referral & Games Portal",
+  "description": "Official FashFOS main website & Nearby Social Media referral games hub featuring weekly/bi-weekly/monthly cash leaderboards, milestone rewards, campus treasure hunts, and team challenges.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

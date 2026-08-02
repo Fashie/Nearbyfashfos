@@ -1,0 +1,529 @@
+{
+  "entities": {
+    "user": {
+      "title": "User",
+      "description": "User profile with status, credentials, location, and visual configurations",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "username": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "bio": { "type": "string" },
+        "gender": { "type": "string" },
+        "birthday": { "type": "string" },
+        "interests": { "type": "array" },
+        "verified": { "type": "boolean" },
+        "trustScore": { "type": "number" },
+        "meetupCount": { "type": "number" },
+        "friendsCount": { "type": "number" },
+        "followersCount": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "lastSeen": { "type": "string" },
+        "online": { "type": "boolean" },
+        "locationEnabled": { "type": "boolean" },
+        "name": { "type": "string" },
+        "website": { "type": "string" },
+        "avatarEmoji": { "type": "string" },
+        "avatarColor": { "type": "string" },
+        "isSubscribed": { "type": "boolean" },
+        "friendIds": { "type": "array" },
+        "isUserVisibleOnRadar": { "type": "boolean" },
+        "userRadarStatusText": { "type": "string" },
+        "userRadarEmoji": { "type": "string" },
+        "customAccentColor": { "type": "string" },
+        "customChatBg": { "type": "string" },
+        "customChatBubbleStyle": { "type": "string" },
+        "customChatFont": { "type": "string" },
+        "userGroupInvitePolicy": { "type": "string" },
+        "userGroupCallPolicy": { "type": "string" },
+        "myNoteText": { "type": "string" },
+        "customProfilePhoto": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "latOffset": { "type": "number" },
+        "lngOffset": { "type": "number" },
+        "streetName": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid", "username"]
+    },
+    "message": {
+      "title": "DirectMessage",
+      "description": "A single direct message or call log between the user and a neighbor/group",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "senderId": { "type": "string" },
+        "receiverId": { "type": "string" },
+        "chatThreadId": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "type": { "type": "string" },
+        "text": { "type": "string" },
+        "mediaUrl": { "type": "string" },
+        "audioDurationSec": { "type": "number" },
+        "isUnread": { "type": "boolean" }
+      },
+      "required": ["id", "senderId", "receiverId", "chatThreadId", "timestamp", "type"]
+    },
+    "story": {
+      "title": "StorySnap",
+      "description": "An interactive WhatsApp/Instagram-style status/story snap with viewers, reactions, and replies",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "mediaUrl": { "type": "string" },
+        "caption": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "viewed": { "type": "boolean" },
+        "createdAt": { "type": "number" },
+        "viewers": { "type": "array" },
+        "reactions": { "type": "array" },
+        "replies": { "type": "array" },
+        "privacy": { "type": "string" },
+        "customList": { "type": "array" }
+      },
+      "required": ["id", "mediaUrl", "timestamp", "viewed"]
+    },
+    "post": {
+      "title": "UserPost",
+      "description": "An Instagram-style profile picture post uploaded by the user with interactive captions and dates",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "mediaUrl": { "type": "string" },
+        "caption": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "type": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "mediaUrl", "timestamp"]
+    },
+    "highlight": {
+      "title": "UserHighlight",
+      "description": "A highlight media item uploaded to the user profile",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "mediaUrl": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "mediaUrl"]
+    },
+    "call": {
+      "title": "ActiveCall",
+      "description": "Active real-time call signaling document",
+      "type": "object",
+      "properties": {
+        "callerId": { "type": "string" },
+        "callerName": { "type": "string" },
+        "receiverId": { "type": "string" },
+        "type": { "type": "string" },
+        "status": { "type": "string" },
+        "incoming": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["status", "type"]
+    },
+    "group": {
+      "title": "GroupChat",
+      "description": "A collaborative chat group for mutual friends on the Nearby Radar",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "username": { "type": "string" },
+        "avatarColor": { "type": "string" },
+        "avatarEmoji": { "type": "string" },
+        "isGroup": { "type": "boolean" },
+        "groupMembers": { "type": "array" },
+        "groupCreatedBy": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "groupMembers"]
+    },
+    "location": {
+      "title": "UserLocation",
+      "description": "User persistent GPS location tracking details with privacy options",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "timestamp": { "type": "number" },
+        "radarEnabled": { "type": "boolean" },
+        "visibilityMode": { "type": "string" },
+        "lastUpdated": { "type": "string" }
+      },
+      "required": ["userId", "latitude", "longitude"]
+    },
+    "friendship": {
+      "title": "UserFriendship",
+      "description": "Real-time user friendship mapping",
+      "type": "object",
+      "properties": {
+        "friendshipId": { "type": "string" },
+        "userA": { "type": "string" },
+        "userB": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "status": { "type": "string" },
+        "id": { "type": "string" },
+        "userId1": { "type": "string" },
+        "userId2": { "type": "string" },
+        "lastUpdated": { "type": "string" }
+      },
+      "required": ["friendshipId", "userA", "userB", "status"]
+    },
+    "friend_request": {
+      "title": "FriendRequest",
+      "description": "Proximity user friend / connection request pending state",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string" },
+        "receiverId": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["senderId", "receiverId", "status"]
+    },
+    "friendRequests": {
+      "title": "FriendRequests",
+      "description": "WhatsApp-style connection requests tracking",
+      "type": "object",
+      "properties": {
+        "senderUID": { "type": "string" },
+        "receiverUID": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["senderUID", "receiverUID", "status", "createdAt"]
+    },
+    "Conversations": {
+      "title": "Conversations",
+      "description": "One on one or group conversation threads",
+      "type": "object",
+      "properties": {
+        "conversationId": { "type": "string" },
+        "participants": { "type": "array" },
+        "lastMessage": { "type": "string" },
+        "lastMessageTime": { "type": "string" },
+        "lastSender": { "type": "string" },
+        "unreadCounts": { "type": "object" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["conversationId", "participants", "createdAt"]
+    },
+    "messages": {
+      "title": "Messages",
+      "description": "Individual messages inside a conversation thread, exactly how WhatsApp works",
+      "type": "object",
+      "properties": {
+        "conversationId": { "type": "string" },
+        "messageId": { "type": "string" },
+        "senderUID": { "type": "string" },
+        "text": { "type": "string" },
+        "imageURL": { "type": "string" },
+        "videoURL": { "type": "string" },
+        "voiceURL": { "type": "string" },
+        "fileURL": { "type": "string" },
+        "replyTo": { "type": "string" },
+        "edited": { "type": "boolean" },
+        "deleted": { "type": "boolean" },
+        "readBy": { "type": "array" },
+        "timestamp": { "type": "string" },
+        "reactions": { "type": "array" }
+      },
+      "required": ["conversationId", "messageId", "senderUID", "timestamp"]
+    },
+    "visibilitySettings": {
+      "title": "UserVisibilitySettings",
+      "description": "User specific radar privacy settings and blocked lists",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "radarEnabled": { "type": "boolean" },
+        "visibilityMode": { "type": "string" },
+        "hideExactLocation": { "type": "boolean" },
+        "blockedUserIds": { "type": "array" },
+        "lastUpdated": { "type": "string" }
+      },
+      "required": ["userId"]
+    },
+    "community": {
+      "title": "LocalCommunity",
+      "description": "A local physical neighborhood group or campus community created by users",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "memberCount": { "type": "number" },
+        "locationName": { "type": "string" },
+        "image": { "type": "string" },
+        "moderator": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "category", "description"]
+    },
+    "community_discussion": {
+      "title": "CommunityDiscussion",
+      "description": "A live message/discussion inside a community",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "communityId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "text": { "type": "string" },
+        "time": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "communityId", "authorName", "text"]
+    },
+    "feed_post": {
+      "title": "NearbyFeedPost",
+      "description": "A global discoverable neighborhood feed post containing likes, saves, comments, base64 images",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorEmoji": { "type": "string" },
+        "authorColor": { "type": "string" },
+        "type": { "type": "string" },
+        "content": { "type": "string" },
+        "mediaUrl": { "type": "string" },
+        "likes": { "type": "array" },
+        "saves": { "type": "array" },
+        "comments": { "type": "array" },
+        "distanceMeters": { "type": "number" },
+        "streetName": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "createdAt": { "type": "string" }
+      }
+    },
+    "meetup": {
+      "title": "Meetup",
+      "description": "Safe meetup logs and state tracker",
+      "type": "object",
+      "properties": {
+        "meetupId": { "type": "string" },
+        "hostUID": { "type": "string" },
+        "participantUID": { "type": "string" },
+        "meetingPoint": { "type": "string" },
+        "meetingLatitude": { "type": "number" },
+        "meetingLongitude": { "type": "number" },
+        "status": { "type": "string" },
+        "scheduledTime": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["meetupId", "hostUID", "participantUID", "status"]
+    },
+    "meetup_rating": {
+      "title": "MeetupRating",
+      "description": "Post-meetup feedback rating that affects user trust ratings",
+      "type": "object",
+      "properties": {
+        "ratingId": { "type": "string" },
+        "meetupId": { "type": "string" },
+        "reviewerUID": { "type": "string" },
+        "receiverUID": { "type": "string" },
+        "stars": { "type": "number" },
+        "review": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["ratingId", "meetupId", "reviewerUID", "receiverUID", "stars"]
+    },
+    "liveLocation": {
+      "title": "LiveLocation",
+      "description": "Throttled real-time location updates for users to optimize database costs",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "accuracy": { "type": "number" },
+        "heading": { "type": "number" },
+        "speed": { "type": "number" },
+        "updatedAt": { "type": "string" },
+        "visibility": { "type": "string" },
+        "radarEnabled": { "type": "boolean" }
+      },
+      "required": ["uid", "latitude", "longitude", "updatedAt"]
+    },
+    "safeMeetup": {
+      "title": "SafeMeetup",
+      "description": "Cached safe meetup locations retrieved from Google Places",
+      "type": "object",
+      "properties": {
+        "placeId": { "type": "string" },
+        "name": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "type": { "type": "string" },
+        "address": { "type": "string" },
+        "rating": { "type": "number" },
+        "photo": { "type": "string" },
+        "city": { "type": "string" },
+        "state": { "type": "string" },
+        "country": { "type": "string" }
+      },
+      "required": ["placeId", "name", "latitude", "longitude"]
+    },
+    "userPresence": {
+      "title": "UserPresence",
+      "description": "WhatsApp-style real-time user presence and typing tracking",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "online": { "type": "boolean" },
+        "typing": { "type": "string" },
+        "lastSeen": { "type": "string" },
+        "currentConversation": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid", "online", "typing", "lastSeen", "currentConversation", "updatedAt"]
+    },
+    "callLog": {
+      "title": "CallLog",
+      "description": "WhatsApp-style real-time call tracking log",
+      "type": "object",
+      "properties": {
+        "callId": { "type": "string" },
+        "callerUID": { "type": "string" },
+        "receiverUID": { "type": "string" },
+        "status": { "type": "string" },
+        "ringing": { "type": "boolean" },
+        "accepted": { "type": "boolean" },
+        "declined": { "type": "boolean" },
+        "ended": { "type": "boolean" },
+        "startedAt": { "type": "string" },
+        "endedAt": { "type": "string" }
+      },
+      "required": ["callId", "callerUID", "receiverUID", "status", "ringing", "accepted", "declined", "ended"]
+    },
+    "settings": {
+      "title": "UserSettings",
+      "description": "User specific app, theme, notification, and privacy configurations",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "theme": { "type": "string" },
+        "language": { "type": "string" },
+        "notifications": { "type": "object" },
+        "privacy": { "type": "object" },
+        "location": { "type": "object" },
+        "meetups": { "type": "object" },
+        "stories": { "type": "object" },
+        "visibility": { "type": "object" }
+      },
+      "required": ["uid"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "user",
+      "description": "User settings and state document"
+    },
+    "/users/{userId}/messages/{messageId}": {
+      "schema": "message",
+      "description": "Sent and received messages synchronized to user's database"
+    },
+    "/users/{userId}/stories/{storyId}": {
+      "schema": "story",
+      "description": "User uploaded story media items"
+    },
+    "/users/{userId}/posts/{postId}": {
+      "schema": "post",
+      "description": "Grid posts uploaded to the user's profile feed"
+    },
+    "/users/{userId}/highlights/{highlightId}": {
+      "schema": "highlight",
+      "description": "Highlights uploaded to the user's profile feed"
+    },
+    "/users/{userId}/calls/{callId}": {
+      "schema": "call",
+      "description": "Active calls signaling documents"
+    },
+    "/groups/{groupId}": {
+      "schema": "group",
+      "description": "Top-level group chat settings and participants"
+    },
+    "/groups/{groupId}/messages/{messageId}": {
+      "schema": "message",
+      "description": "Messages sent inside a persistent group chat"
+    },
+    "/locations/{userId}": {
+      "schema": "location",
+      "description": "User live physical positions and coordinates"
+    },
+    "/friendships/{friendshipId}": {
+      "schema": "friendship",
+      "description": "Direct friendships connections tracker"
+    },
+    "/friend_requests/{requestId}": {
+      "schema": "friend_request",
+      "description": "Proximity user friend requests incoming and outgoing lists"
+    },
+    "/friendRequests/{requestId}": {
+      "schema": "friendRequests",
+      "description": "WhatsApp-style contact requests pending state"
+    },
+    "/Conversations/{conversationId}": {
+      "schema": "Conversations",
+      "description": "One on one or group conversation threads"
+    },
+    "/messages/{messageId}": {
+      "schema": "messages",
+      "description": "Individual messages inside a conversation thread, exactly how WhatsApp works"
+    },
+    "/visibilitySettings/{userId}": {
+      "schema": "visibilitySettings",
+      "description": "Radar settings, ghost-mode, and blocking"
+    },
+    "/communities/{communityId}": {
+      "schema": "community",
+      "description": "Physical local neighborhood community details and settings"
+    },
+    "/community_discussions/{discussionId}": {
+      "schema": "community_discussion",
+      "description": "A live message/discussion inside a community board"
+    },
+    "/posts/{postId}": {
+      "schema": "feed_post",
+      "description": "Discoverable local neighborhood feed update posts with likes, shares, comments"
+    },
+    "/meetups/{meetupId}": {
+      "schema": "meetup",
+      "description": "Safe meetup sessions between neighbors"
+    },
+    "/meetupRatings/{ratingId}": {
+      "schema": "meetup_rating",
+      "description": "Feedback ratings from physical meetups"
+    },
+    "/liveLocations/{userId}": {
+      "schema": "liveLocation",
+      "description": "Throttled user live locations for radar and cost optimization"
+    },
+    "/safeMeetups/{placeId}": {
+      "schema": "safeMeetup",
+      "description": "Google Places cached safe physical spots"
+    },
+    "/presence/{userId}": {
+      "schema": "userPresence",
+      "description": "WhatsApp-style user online and typing presence states"
+    },
+    "/calls/{callId}": {
+      "schema": "callLog",
+      "description": "WhatsApp-style calls history logs"
+    },
+    "/settings/{userId}": {
+      "schema": "settings",
+      "description": "User specific app configurations, theme, language, notifications, and privacy preferences"
+    }
+  }
+}
