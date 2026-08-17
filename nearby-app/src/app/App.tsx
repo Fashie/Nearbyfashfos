@@ -734,22 +734,24 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = async (event) => {
       const dataUrl = event.target?.result as string;
+      // Show it locally right away for a snappy UI, but this is only an optimistic
+      // preview — do NOT tell the user it's saved until it's actually persisted below.
       setCustomProfilePhoto(dataUrl);
       setOnboardingPhoto(dataUrl);
-      setAudioFeedback("Profile photo registered!");
-      setTimeout(() => setAudioFeedback(""), 2000);
+      setAudioFeedback("Uploading photo...");
 
       const fUser = auth.currentUser;
       if (fUser) {
-        let finalUrl = dataUrl;
+        let finalUrl: string | null = null;
         try {
           const fileExtension = file.name.split('.').pop() || 'jpeg';
           const storagePath = `profiles/${fUser.uid}/${Date.now()}.${fileExtension}`;
           finalUrl = await uploadToStorage(dataUrl, storagePath);
-          setCustomProfilePhoto(finalUrl);
-          setOnboardingPhoto(finalUrl);
         } catch (err) {
-          console.warn("Failed to upload profile photo to storage, keeping local/dataUrl:", err);
+          console.error("Failed to upload profile photo to storage:", err);
+          setAudioFeedback("Photo upload failed — check your connection and try again");
+          setTimeout(() => setAudioFeedback(""), 3000);
+          return; // Don't write anything to Firestore if we don't have a safe URL
         }
 
         try {
@@ -759,6 +761,9 @@ export default function App() {
             updatedAt: new Date().toISOString()
           }, { merge: true });
 
+          setCustomProfilePhoto(finalUrl);
+          setOnboardingPhoto(finalUrl);
+
           const cacheKey = `nearby_cached_profile_${fUser.uid}`;
           const existing = localStorage.getItem(cacheKey);
           if (existing) {
@@ -767,9 +772,14 @@ export default function App() {
               localStorage.setItem(cacheKey, JSON.stringify({ ...parsed, customProfilePhoto: finalUrl }));
             } catch (_) {}
           }
+
+          setAudioFeedback("Profile photo saved!");
+          setTimeout(() => setAudioFeedback(""), 2000);
         } catch (dbErr) {
           console.error("Failed to update profile photo in Firestore:", dbErr);
           handleFirestoreError(dbErr, OperationType.UPDATE, `users/${fUser.uid}`);
+          setAudioFeedback("Couldn't save photo — please try again");
+          setTimeout(() => setAudioFeedback(""), 3000);
         }
       }
     };
@@ -812,15 +822,31 @@ export default function App() {
           return updated;
         });
 
-        let finalMediaUrl = dataUrl;
+        let finalMediaUrl: string | null = null;
+        let uploadFailed = false;
         if (fUser) {
           try {
             const fileExtension = file.name.split('.').pop() || 'jpeg';
             const storagePath = `users/${fUser.uid}/highlights/${hlId}.${fileExtension}`;
             finalMediaUrl = await uploadToStorage(file, storagePath);
           } catch (uploadErr) {
-            console.warn("Storage upload failed for highlight, using local fallback:", uploadErr);
+            console.error("Storage upload failed for highlight:", uploadErr);
+            uploadFailed = true;
           }
+        }
+
+        if (uploadFailed || !finalMediaUrl) {
+          // Roll back the optimistic entry — don't leave a highlight in the UI
+          // that never actually got persisted, or it'll vanish on next reload
+          // and look like Firestore "acting up".
+          setUserHighlights(prev => {
+            const updated = prev.filter(h => h.id !== hlId);
+            try { localStorage.setItem('nearby_cached_highlights', JSON.stringify(updated)); } catch (_) {}
+            return updated;
+          });
+          setAudioFeedback("Highlight upload failed — check your connection and try again");
+          setTimeout(() => setAudioFeedback(""), 3000);
+          return;
         }
 
         const finalHlDoc = {
@@ -831,7 +857,7 @@ export default function App() {
         };
 
         setUserHighlights(prev => {
-          const updated = prev.map(h => h.id === hlId ? { id: hlId, name: title, mediaUrl: finalMediaUrl } : h);
+          const updated = prev.map(h => h.id === hlId ? { id: hlId, name: title, mediaUrl: finalMediaUrl as string } : h);
           try { localStorage.setItem('nearby_cached_highlights', JSON.stringify(updated)); } catch (_) {}
           return updated;
         });
@@ -844,6 +870,13 @@ export default function App() {
           } catch (err) {
             console.error("Firestore write highlight error:", err);
             handleFirestoreError(err, OperationType.WRITE, `users/${fUser.uid}/highlights/${hlId}`);
+            setUserHighlights(prev => {
+              const updated = prev.filter(h => h.id !== hlId);
+              try { localStorage.setItem('nearby_cached_highlights', JSON.stringify(updated)); } catch (_) {}
+              return updated;
+            });
+            setAudioFeedback("Couldn't save highlight — please try again");
+            setTimeout(() => setAudioFeedback(""), 3000);
           }
         } else {
           setAudioFeedback("Highlight added locally!");
@@ -866,15 +899,30 @@ export default function App() {
           return updated;
         });
 
-        let finalMediaUrl = dataUrl;
+        let finalMediaUrl: string | null = null;
+        let uploadFailed = false;
         if (fUser) {
           try {
             const fileExtension = file.name.split('.').pop() || 'jpeg';
             const storagePath = `users/${fUser.uid}/posts/${postId}.${fileExtension}`;
             finalMediaUrl = await uploadToStorage(file, storagePath);
           } catch (uploadErr) {
-            console.warn("Storage upload failed for post, using local fallback:", uploadErr);
+            console.error("Storage upload failed for post:", uploadErr);
+            uploadFailed = true;
           }
+        }
+
+        if (uploadFailed || !finalMediaUrl) {
+          // Roll back the optimistic post — don't leave it visible only until
+          // the next reload, when it'll vanish because it was never saved.
+          setUserPosts(prev => {
+            const updated = prev.filter(p => p.id !== postId);
+            try { localStorage.setItem('nearby_cached_posts', JSON.stringify(updated)); } catch (_) {}
+            return updated;
+          });
+          setAudioFeedback("Post upload failed — check your connection and try again");
+          setTimeout(() => setAudioFeedback(""), 3000);
+          return;
         }
 
         const finalPostDoc = {
@@ -889,7 +937,7 @@ export default function App() {
         setUserPosts(prev => {
           const updated = prev.map(p => p.id === postId ? {
             id: postId,
-            mediaUrl: finalMediaUrl,
+            mediaUrl: finalMediaUrl as string,
             caption: 'Uploaded from Gallery! 📸🇳🇬',
             timestamp: 'Just now',
             type: isVideo ? ('video' as const) : ('image' as const)
@@ -906,6 +954,13 @@ export default function App() {
           } catch (err) {
             console.error("Firestore write post error:", err);
             handleFirestoreError(err, OperationType.WRITE, `users/${fUser.uid}/posts/${postId}`);
+            setUserPosts(prev => {
+              const updated = prev.filter(p => p.id !== postId);
+              try { localStorage.setItem('nearby_cached_posts', JSON.stringify(updated)); } catch (_) {}
+              return updated;
+            });
+            setAudioFeedback("Couldn't save post — please try again");
+            setTimeout(() => setAudioFeedback(""), 3000);
           }
         } else {
           setAudioFeedback("Post added locally!");
@@ -1066,7 +1121,7 @@ export default function App() {
   const [usingGoogleMaps, setUsingGoogleMaps] = useState<boolean>(hasValidGoogleMapsKey);
   const [userNoteText, setUserNoteText] = useState<string>('');
   const [showNoteModal, setShowNoteModal] = useState<boolean>(false);
-  const [radarRadius, setRadarRadius] = useState<number>(500); // meters Slider filter
+  const [radarRadius, setRadarRadius] = useState<number>(5000); // meters Slider filter — was 500m, far too tight for real-world discovery/testing
   const [showRadarDrawer, setShowRadarDrawer] = useState<boolean>(false);
   const [showFloatingSearch, setShowFloatingSearch] = useState<boolean>(false);
 
@@ -3226,7 +3281,17 @@ export default function App() {
         const isUserFriend = (Array.isArray(u.friendIds) ? u.friendIds : []).includes(currentUser.uid) || (Array.isArray(friendIds) ? friendIds : []).includes(u.uid);
         const isFriendRequester = pendingFriendRequests.includes(u.uid);
         const isFriendRequested = sentFriendRequestIds.includes(u.uid);
-        const hasRelationship = isUserFriend || isFriendRequester || isFriendRequested;
+        // Anyone we already have a message thread with must never be filtered out —
+        // otherwise their messages arrive in Firestore but silently vanish from the
+        // chat list because the sender isn't in `neighbors`. This was the root cause
+        // of chat appearing "one-directional" between two accounts.
+        const hasExistingChat = !!(chatMessages[u.uid] && chatMessages[u.uid].length > 0);
+        // Brand-new accounts (created in the last 24h) are always visible regardless
+        // of distance, so freshly signed-up test/real accounts aren't invisible
+        // everywhere (radar, explore, add-friends) just because their GPS position
+        // hasn't synced yet or genuinely falls outside the radius.
+        const isRecentlyJoined = !!(u.createdAt && (Date.now() - new Date(u.createdAt).getTime()) < 24 * 60 * 60 * 1000);
+        const hasRelationship = isUserFriend || isFriendRequester || isFriendRequested || hasExistingChat || isRecentlyJoined;
 
         // 1. Radar Mode verification: Show only users who have Radar Mode turned ON o!
         const isRadarEnabled = u.isUserVisibleOnRadar !== false;
@@ -3335,7 +3400,8 @@ export default function App() {
     radarRadius,
     radarVisibilityMode,
     pendingFriendRequests.join(','),
-    sentFriendRequestIds.join(',')
+    sentFriendRequestIds.join(','),
+    Object.keys(chatMessages).join(',')
   ]);
 
   // Synchronize viewed Neighbor's profile posts & highlights in real-time o!
