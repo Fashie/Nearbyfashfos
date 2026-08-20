@@ -853,29 +853,11 @@ export async function uploadToStorage(data: File | Blob | string, path: string):
     if (typeof data === 'string') {
       return data;
     }
-
-    // Convert File/Blob to base64 as a last-resort fallback.
-    // IMPORTANT: never silently hand back an oversized base64 string —
-    // Firestore documents are capped at ~1MB, and the `users/{uid}` doc in
-    // particular is read by every other signed-in user via a live listener,
-    // so a large embedded image there causes slow/dropped real-time sync
-    // for everyone (this was the underlying cause of profile photos,
-    // highlights and posts appearing to "disappear" after reload — the
-    // Storage upload failed silently, and the base64 fallback either blew
-    // the 1MB doc limit on write, or bloated every client's user-list sync).
-    // If we can't get a real Storage URL, fail loudly instead so the caller
-    // can show the user an accurate error rather than a false "saved!" state.
-    const MAX_FALLBACK_BYTES = 700 * 1024; // ~700KB, safely under the 1MB doc cap
-    if ((data instanceof Blob) && data.size > MAX_FALLBACK_BYTES) {
-      throw new Error(
-        `Upload to Firebase Storage failed and the image is too large (${Math.round(data.size / 1024)}KB) to safely fall back to inline storage. Check that Firebase Storage is enabled and storage.rules has been deployed for this project.`
-      );
-    }
-
-    return new Promise((resolve, reject) => {
+    // Convert File/Blob to base64 as fallback o!
+    return new Promise((resolve) => {
       const reader = new FileReader();
       reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = () => reject(new Error('Failed to read image data for fallback storage.'));
+      reader.onerror = () => resolve('');
       reader.readAsDataURL(data);
     });
   }

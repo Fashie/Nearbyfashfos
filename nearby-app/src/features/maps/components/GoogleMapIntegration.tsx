@@ -12,14 +12,17 @@ import {
   Sparkles, 
   MessageSquare, 
   User,
-  RefreshCw,
-  ShieldCheck
+  RefreshCw
 } from 'lucide-react';
 import { Neighbor } from '../../../types';
 import { NEIGHBORHOODS, LocationPreset } from '../../../mockData';
 
 const GOOGLE_MAPS_API_KEY =
-  (import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY || '';
+  (import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY ||
+  (typeof process !== 'undefined' ? process.env?.GOOGLE_MAPS_PLATFORM_KEY : '') ||
+  (import.meta as any).env?.VITE_GOOGLE_MAPS_PLATFORM_KEY ||
+  (globalThis as any).GOOGLE_MAPS_PLATFORM_KEY ||
+  '';
 const hasValidGoogleMapsKey = Boolean(GOOGLE_MAPS_API_KEY) && GOOGLE_MAPS_API_KEY !== 'YOUR_API_KEY';
 
 const getDynamicHotspots = (presetCity: string, streets: string[]) => {
@@ -62,7 +65,7 @@ export interface GoogleMapIntegrationProps {
 // Custom Helper Components
 function CustomPolyline({
   path,
-  color = '#0F8A5F'
+  color = '#00afef'
 }: {
   path: Array<{ lat: number; lng: number }>;
   color?: string;
@@ -150,7 +153,7 @@ const lightMapStyle = [
   { "featureType": "all", "elementType": "labels.text.fill", "stylers": [{ "color": "#4A4A4A" }] },
   { "featureType": "all", "elementType": "labels.text.stroke", "stylers": [{ "color": "#F4F5F7" }] },
   { "featureType": "poi", "elementType": "geometry", "stylers": [{ "color": "#EAECEF" }] },
-  { "featureType": "poi.park", "elementType": "geometry", "stylers": [{ "color": "#DDF7EC" }] },
+  { "featureType": "poi.park", "elementType": "geometry", "stylers": [{ "color": "#D3E9D9" }] },
   { "featureType": "road", "elementType": "geometry", "stylers": [{ "color": "#FFFFFF" }] },
   { "featureType": "road", "elementType": "geometry.stroke", "stylers": [{ "color": "#E0E3E8" }] },
   { "featureType": "water", "elementType": "geometry", "stylers": [{ "color": "#C9E2F2" }] }
@@ -354,9 +357,9 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
     const userMarkerIcon = L.divIcon({
       html: `
         <div class="relative flex items-center justify-center">
-          <div class="absolute w-24 h-24 rounded-full bg-[#0F8A5F]/15 border border-[#0F8A5F]/30 pointer-events-none"></div>
-          <div class="absolute w-12 h-12 rounded-full bg-[#0F8A5F]/40 animate-ping" style="animation-duration: 3s;"></div>
-          <div class="relative w-6 h-6 bg-[#0F8A5F] rounded-full border-4 border-white shadow-[0_0_15px_rgba(0,175,239,0.8)] flex items-center justify-center">
+          <div class="absolute w-24 h-24 rounded-full bg-[#00AFEF]/15 border border-[#00AFEF]/30 pointer-events-none"></div>
+          <div class="absolute w-12 h-12 rounded-full bg-[#00AFEF]/40 animate-ping" style="animation-duration: 3s;"></div>
+          <div class="relative w-6 h-6 bg-[#00AFEF] rounded-full border-4 border-white shadow-[0_0_15px_rgba(0,175,239,0.8)] flex items-center justify-center">
             <div class="w-1.5 h-1.5 bg-white rounded-full"></div>
           </div>
         </div>
@@ -445,7 +448,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
 
             const points = coordinates.map((p: any) => [p.lat, p.lng]);
             const polyline = L.polyline(points, {
-              color: '#0F8A5F',
+              color: '#00afef',
               weight: 5,
               opacity: 0.85,
               dashArray: '5, 8'
@@ -693,9 +696,9 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
               {/* User Location Pin */}
               <AdvancedMarker position={activeCoords} title="Your Location">
                 <div className="relative flex items-center justify-center pointer-events-none">
-                  <div className="absolute w-24 h-24 rounded-full bg-[#0F8A5F]/15 border border-[#0F8A5F]/25 animate-pulse" style={{ animationDuration: '3s' }} />
-                  <div className="absolute w-12 h-12 rounded-full bg-[#0F8A5F]/30 animate-ping" style={{ animationDuration: '3s' }} />
-                  <div className="relative w-6 h-6 bg-[#0F8A5F] rounded-full border-4 border-white dark:border-zinc-800 shadow-[0_0_15px_rgba(0,175,239,0.85)] flex items-center justify-center">
+                  <div className="absolute w-24 h-24 rounded-full bg-[#00AFEF]/15 border border-[#00AFEF]/25 animate-pulse" style={{ animationDuration: '3s' }} />
+                  <div className="absolute w-12 h-12 rounded-full bg-[#00AFEF]/30 animate-ping" style={{ animationDuration: '3s' }} />
+                  <div className="relative w-6 h-6 bg-[#00AFEF] rounded-full border-4 border-white dark:border-zinc-800 shadow-[0_0_15px_rgba(0,175,239,0.85)] flex items-center justify-center">
                     <div className="w-1.5 h-1.5 bg-white rounded-full" />
                   </div>
                 </div>
@@ -762,7 +765,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
 
               {/* Polyline */}
               {selectedNeighborForRoute && computedRoute && computedRoute.path.length > 0 && (
-                <CustomPolyline path={computedRoute.path} color="#0F8A5F" />
+                <CustomPolyline path={computedRoute.path} color="#00AFEF" />
               )}
             </Map>
           </div>
@@ -778,7 +781,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
       )}
 
       {/* 2. Top Header Floating Glass Card */}
-      <div className="absolute top-4 left-4 right-4 z-40 bg-white/70 dark:bg-black/60 backdrop-blur-lg border border-white/20 dark:border-white/10 rounded-[20px] p-3 shadow-[0_8px_32px_rgba(0,0,0,0.1)] flex items-center justify-between">
+      <div className="absolute top-4 left-4 right-4 z-40 bg-white/70 dark:bg-black/60 backdrop-blur-lg border border-white/20 dark:border-white/10 rounded-2xl p-3 shadow-[0_8px_32px_rgba(0,0,0,0.1)] flex items-center justify-between">
         <div className="flex items-center space-x-2 flex-grow">
           <div className="relative flex-grow">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-neutral-400" />
@@ -790,13 +793,13 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleAddressSearch();
               }}
-              className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-xl h-9 pl-9 pr-3 text-xs text-neutral-800 dark:text-white placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-[#0F8A5F] transition-all"
+              className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-xl h-9 pl-9 pr-3 text-xs text-neutral-800 dark:text-white placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-[#00AFEF] transition-all"
             />
           </div>
 
           <button
             onClick={handleAddressSearch}
-            className="px-4.5 h-9 bg-[#0F8A5F] hover:bg-[#0F8A5F]/90 text-white rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer"
+            className="px-4.5 h-9 bg-[#00AFEF] hover:bg-[#00AFEF]/90 text-white rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer"
           >
             Go
           </button>
@@ -824,10 +827,10 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
           }}
           className="p-3 px-5 bg-white/80 dark:bg-black/60 backdrop-blur-md hover:bg-white dark:hover:bg-black text-neutral-800 dark:text-white rounded-full shadow-lg transition-all active:scale-95 flex items-center space-x-2 border border-white/20 dark:border-white/10 font-sans text-xs font-bold cursor-pointer"
         >
-          <SlidersHorizontal className="w-4 h-4 text-[#0F8A5F]" />
+          <SlidersHorizontal className="w-4 h-4 text-[#00AFEF]" />
           <span>Filters</span>
           {(filterDistance !== 1000 || filterAge !== 'All' || filterGender !== 'All' || filterInterest !== 'All' || filterVerifiedOnly || filterHighlyTrustedOnly || filterAvailableToMeet || filterOnlineOnly) && (
-            <span className="w-2.5 h-2.5 rounded-full bg-[#0F8A5F]" />
+            <span className="w-2.5 h-2.5 rounded-full bg-[#00AFEF]" />
           )}
         </button>
       </div>
@@ -861,7 +864,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
           className="w-12 h-12 rounded-full bg-white/70 dark:bg-black/60 backdrop-blur-md border border-white/20 dark:border-white/10 hover:bg-white dark:hover:bg-black text-neutral-800 dark:text-white flex items-center justify-center cursor-pointer transition shadow-lg hover:scale-105 active:scale-95"
           title="Reset Compass"
         >
-          <Compass className="w-5 h-5 text-[#0F8A5F]" />
+          <Compass className="w-5 h-5 text-[#00AFEF]" />
         </button>
 
         <button
@@ -872,7 +875,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
           className="w-12 h-12 rounded-full bg-white/70 dark:bg-black/60 backdrop-blur-md border border-white/20 dark:border-white/10 hover:bg-white dark:hover:bg-black text-neutral-800 dark:text-white flex items-center justify-center cursor-pointer transition shadow-lg hover:scale-105 active:scale-95"
           title="Radar settings"
         >
-          <Settings className="w-5 h-5 text-[#0F8A5F]" />
+          <Settings className="w-5 h-5 text-[#00AFEF]" />
         </button>
 
         <button
@@ -892,7 +895,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
           className="w-12 h-12 rounded-full bg-white/70 dark:bg-black/60 backdrop-blur-md border border-white/20 dark:border-white/10 hover:bg-white dark:hover:bg-black text-neutral-800 dark:text-white flex items-center justify-center cursor-pointer transition shadow-lg hover:scale-105 active:scale-95"
           title="Center Map"
         >
-          <Navigation className="w-5 h-5 text-[#0F8A5F] fill-[#0F8A5F] transform rotate-45 translate-x-[1px] -translate-y-[1px]" />
+          <Navigation className="w-5 h-5 text-[#00AFEF] fill-[#00AFEF] transform rotate-45 translate-x-[1px] -translate-y-[1px]" />
         </button>
 
         <button
@@ -932,12 +935,11 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
           className="w-12 h-12 rounded-full bg-white/70 dark:bg-black/60 backdrop-blur-md border border-white/20 dark:border-white/10 hover:bg-white dark:hover:bg-black text-neutral-800 dark:text-white flex items-center justify-center cursor-pointer transition shadow-lg hover:scale-105 active:scale-95"
           title="Sync GPS location"
         >
-          <MapPin className="w-5 h-5 text-[#0F8A5F]" />
+          <MapPin className="w-5 h-5 text-[#00AFEF]" />
         </button>
       </div>
 
-      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 bg-white/60 dark:bg-black/50 border border-white/10 px-3 py-1 rounded-full text-[9px] text-neutral-600 dark:text-neutral-400 font-mono backdrop-blur pointer-events-none flex items-center gap-1.5">
-        <ShieldCheck className="w-3 h-3 text-[#0F8A5F]" />
+      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 bg-white/60 dark:bg-black/50 border border-white/10 px-3 py-1 rounded-full text-[9px] text-neutral-600 dark:text-neutral-400 font-mono backdrop-blur pointer-events-none">
         {mapFilteredNeighbors.length} people nearby • 100% Secure
       </div>
 
@@ -993,7 +995,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
                   </p>
                   
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5">
-                    <span className="text-xs font-bold text-[#0F8A5F] bg-[#0F8A5F]/10 px-2.5 py-0.5 rounded-full">
+                    <span className="text-xs font-bold text-[#00AFEF] bg-[#00AFEF]/10 px-2.5 py-0.5 rounded-full">
                       📍 {selectedNeighborForRoute.distanceMeters >= 1000 
                         ? `${(selectedNeighborForRoute.distanceMeters / 1000).toFixed(1)} km` 
                         : `${selectedNeighborForRoute.distanceMeters}m`} Away
@@ -1047,7 +1049,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
                     setActiveTab('chat');
                   }
                 }}
-                className="py-3 px-1 bg-[#0F8A5F] hover:bg-[#0F8A5F]/90 text-white rounded-2xl font-bold text-sm shadow-md hover:scale-[1.02] active:scale-[0.98] transition flex items-center justify-center space-x-1.5 cursor-pointer"
+                className="py-3 px-1 bg-[#00AFEF] hover:bg-[#00AFEF]/90 text-white rounded-2xl font-bold text-sm shadow-md hover:scale-[1.02] active:scale-[0.98] transition flex items-center justify-center space-x-1.5 cursor-pointer"
               >
                 <MessageSquare className="w-4.5 h-4.5" />
                 <span>Message</span>
@@ -1060,7 +1062,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
                     onScheduleMeetup(selectedNeighborForRoute);
                   }
                 }}
-                className="py-3 px-1 bg-[#FF7A59] hover:bg-[#FF7A59]/90 text-white rounded-2xl font-bold text-sm shadow-md hover:scale-[1.02] active:scale-[0.98] transition flex items-center justify-center space-x-1.5 cursor-pointer"
+                className="py-3 px-1 bg-[#25D366] hover:bg-[#25D366]/90 text-white rounded-2xl font-bold text-sm shadow-md hover:scale-[1.02] active:scale-[0.98] transition flex items-center justify-center space-x-1.5 cursor-pointer"
               >
                 <Navigation className="w-4.5 h-4.5" />
                 <span>Meet Up</span>
@@ -1115,7 +1117,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
               <div className="space-y-1.5">
                 <div className="flex justify-between items-center text-xs">
                   <span className="font-bold text-neutral-500 dark:text-neutral-400">Radius Slider</span>
-                  <span className="font-black text-[#0F8A5F]">{filterDistance} meters</span>
+                  <span className="font-black text-[#00AFEF]">{filterDistance} meters</span>
                 </div>
                 <input
                   type="range"
@@ -1127,7 +1129,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
                     setFilterDistance(Number(e.target.value));
                     triggerBeep(380, 0.02);
                   }}
-                  className="w-full h-1.5 rounded-lg cursor-pointer accent-[#0F8A5F] bg-black/10 dark:bg-white/20"
+                  className="w-full h-1.5 rounded-lg cursor-pointer accent-[#00AFEF] bg-black/10 dark:bg-white/20"
                 />
               </div>
 
@@ -1143,7 +1145,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
                       }}
                       className={`py-1.5 rounded-xl text-xs font-bold transition ${
                         filterAge === age
-                          ? 'bg-[#0F8A5F] text-white'
+                          ? 'bg-[#00AFEF] text-white'
                           : 'bg-black/5 dark:bg-white/5 text-neutral-600 dark:text-neutral-350 hover:bg-black/10 dark:hover:bg-white/10 text-neutral-800 dark:text-zinc-300'
                       }`}
                     >
@@ -1165,7 +1167,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
                       }}
                       className={`py-1.5 rounded-xl text-[11px] font-bold transition truncate ${
                         filterGender === gender
-                          ? 'bg-[#0F8A5F] text-white'
+                          ? 'bg-[#00AFEF] text-white'
                           : 'bg-black/5 dark:bg-white/5 text-neutral-600 dark:text-neutral-350 hover:bg-black/10 dark:hover:bg-white/10 text-neutral-800 dark:text-zinc-300'
                       }`}
                     >
@@ -1187,7 +1189,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
                       }}
                       className={`py-1.5 rounded-xl text-xs font-bold transition ${
                         filterInterest === interest
-                          ? 'bg-[#0F8A5F] text-white'
+                          ? 'bg-[#00AFEF] text-white'
                           : 'bg-black/5 dark:bg-white/5 text-neutral-600 dark:text-neutral-350 hover:bg-black/10 dark:hover:bg-white/10 text-neutral-800 dark:text-zinc-300'
                       }`}
                     >
@@ -1207,7 +1209,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
                       setFilterVerifiedOnly(e.target.checked);
                       triggerBeep(410, 0.05);
                     }}
-                    className="w-4 h-4 rounded text-[#0F8A5F] focus:ring-[#0F8A5F] cursor-pointer"
+                    className="w-4 h-4 rounded text-[#00AFEF] focus:ring-[#00AFEF] cursor-pointer"
                   />
                 </label>
 
@@ -1220,7 +1222,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
                       setFilterHighlyTrustedOnly(e.target.checked);
                       triggerBeep(410, 0.05);
                     }}
-                    className="w-4 h-4 rounded text-[#0F8A5F] focus:ring-[#0F8A5F] cursor-pointer"
+                    className="w-4 h-4 rounded text-[#00AFEF] focus:ring-[#00AFEF] cursor-pointer"
                   />
                 </label>
 
@@ -1233,7 +1235,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
                       setFilterAvailableToMeet(e.target.checked);
                       triggerBeep(410, 0.05);
                     }}
-                    className="w-4 h-4 rounded text-[#0F8A5F] focus:ring-[#0F8A5F] cursor-pointer"
+                    className="w-4 h-4 rounded text-[#00AFEF] focus:ring-[#00AFEF] cursor-pointer"
                   />
                 </label>
 
@@ -1246,7 +1248,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
                       setFilterOnlineOnly(e.target.checked);
                       triggerBeep(410, 0.05);
                     }}
-                    className="w-4 h-4 rounded text-[#0F8A5F] focus:ring-[#0F8A5F] cursor-pointer"
+                    className="w-4 h-4 rounded text-[#00AFEF] focus:ring-[#00AFEF] cursor-pointer"
                   />
                 </label>
               </div>
@@ -1257,7 +1259,7 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
                 setShowFiltersSheet(false);
                 triggerBeep(450, 0.08);
               }}
-              className="py-3.5 bg-[#0F8A5F] hover:bg-[#0F8A5F]/90 text-white font-bold rounded-2xl text-sm transition active:scale-95 shadow-md flex items-center justify-center cursor-pointer mt-4"
+              className="py-3.5 bg-[#00AFEF] hover:bg-[#00AFEF]/90 text-white font-bold rounded-2xl text-sm transition active:scale-95 shadow-md flex items-center justify-center cursor-pointer mt-4"
             >
               Apply Filters ({mapFilteredNeighbors.length} found)
             </button>
