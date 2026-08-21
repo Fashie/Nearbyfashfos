@@ -60,6 +60,52 @@ src/
 
 ---
 
+
+## 🧱 App Composition Boundary (Architectural Refactor)
+
+`src/app/App.tsx` is intentionally kept as a thin composition root. It is responsible only for:
+- creating the application runtime with `useNearbyController()`
+- providing that runtime through `NearbyRuntimeContext`
+- selecting Splash / Auth / Banned / Main application surfaces
+- mounting the Google Maps provider when the existing runtime enables it
+
+The former monolithic JSX has been decomposed into app-level screen components under `src/app/components/`. The extracted components consume the existing runtime through context so that the refactor does not require large prop chains or change existing business logic.
+
+### Current App Composition
+
+```text
+src/app/
+├── App.tsx                         # Thin composition root
+├── context/
+│   └── NearbyRuntimeContext.tsx    # Runtime dependency boundary
+├── hooks/
+│   └── useNearbyController.ts      # Existing state/effects/actions boundary
+└── components/
+    ├── SplashScreen.tsx
+    ├── AuthGate.tsx
+    ├── BannedScreen.tsx
+    ├── NearbyAppView.tsx
+    ├── AppHeaderAndBanners.tsx
+    ├── MainTabContent.tsx
+    ├── ChatTab.tsx
+    ├── RadarTab.tsx
+    ├── StatusTab.tsx
+    ├── ExploreTabView.tsx
+    ├── MenuTab.tsx
+    ├── CameraOverlay.tsx
+    ├── ChatRoomOverlay.tsx
+    ├── CallScreenOverlay.tsx
+    ├── AppModals.tsx
+    ├── BottomNav.tsx
+    └── SecondaryModals.tsx
+```
+
+### Refactoring Rule
+
+Future changes must NOT place new feature UI, business logic, Firebase operations, or large handlers back into `src/app/App.tsx`. New functionality belongs in the appropriate feature module or shared service. `App.tsx` should remain a composition root.
+
+The current `useNearbyController.ts` is a safe transitional boundary containing the existing application state/effects/actions. It is intentionally kept behaviorally equivalent to the previous `App.tsx` so that controller decomposition can happen as a separate, testable milestone rather than during this UI extraction.
+
 ## 🛠️ Feature Responsibilities
 
 Each feature directory within `features/` is fully self-contained to maximize decoupling:

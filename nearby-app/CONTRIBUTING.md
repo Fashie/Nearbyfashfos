@@ -43,6 +43,13 @@ Write clean, type-safe, and self-documenting TypeScript:
 
 ---
 
+
+## 🧩 App Composition Rule
+
+`src/app/App.tsx` must remain a thin composition root. Do not add feature-specific JSX, Firebase operations, large event handlers, or business logic to it. Use the existing app runtime/context boundary and place new work in the appropriate feature, service, hook, or shared component.
+
+The current app-level components under `src/app/components/` are intentionally separated by responsibility (authentication gate, main tabs, chat room, calls, camera, navigation, and modal surfaces). Preserve these boundaries when making future changes.
+
 ## 🧪 Testing and Verification Expectations
 
 Before pushing any changes or requesting a deploy, you must verify the code passes the absolute quality gates:

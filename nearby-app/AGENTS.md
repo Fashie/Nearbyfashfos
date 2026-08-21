@@ -49,7 +49,13 @@ Keep the system status banners integrated smoothly inside `src/App.tsx`:
 
 ---
 
-## 🛠️ 4. Code Quality & Integration Rules
+## 🧱 4. App Architecture Boundary
+
+`src/app/App.tsx` is the composition root and must remain small. Do not append feature implementations, large JSX trees, Firebase mutations, or business logic to it. Use the existing `useNearbyController` + `NearbyRuntimeContext` boundary and the decomposed app components under `src/app/components/`.
+
+When adding a new feature, extend the appropriate feature module rather than growing `App.tsx`. Preserve the existing runtime/context contract unless the task explicitly requires an architectural change.
+
+## 🛠️ 5. Code Quality & Integration Rules
 
 - **Types & Enums**: Maintain strict TypeScript interfaces in `src/App.tsx`. Do not use `const enum`. Put all import lines at the top of files.
 - **Linter Compliance**: Run `npm run lint` and `npm run build` after modifications to ensure type safety compiles correctly.

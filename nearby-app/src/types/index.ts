@@ -15,17 +15,17 @@ export interface Neighbor {
   lngOffset: number; // offset from center for our proximity radar
   latitude?: number;
   longitude?: number;
-  isGroup?: boolean;
-  groupMembers?: string[];
-  groupCreatedBy?: string;
-  pinned?: boolean;
-  pinTime?: number;
-  isFriend?: boolean;
-  customProfilePhoto?: string;
-  typingTo?: string;
-  lastSeen?: string;
-  isArchived?: boolean;
-  archiveTime?: number;
+  isGroup?: boolean; // GB WhatsApp Style Group chat support
+  groupMembers?: string[]; // IDs of neighbors inside the group
+  groupCreatedBy?: string; // 'user' or neighbor ID
+  pinned?: boolean; // Pinned chat indicator
+  pinTime?: number; // Sorting pinned chats
+  isFriend?: boolean; // Friending limit support
+  customProfilePhoto?: string; // Real-time user photo support o!
+  typingTo?: string; // UID of user they are currently typing to o!
+  lastSeen?: string; // Offline timestamp metadata o!
+  isArchived?: boolean; // Archived chat support o!
+  archiveTime?: number; // Sorting archives o!
   ageRange?: string;
   gender?: string;
   communities?: string[];
@@ -37,15 +37,15 @@ export interface Neighbor {
   banned?: boolean;
   verificationLevel?: 'Basic' | 'Verified';
   dayTimeAvailability?: 'Available Right Now' | 'Today' | 'Tomorrow' | 'This Weekend';
-  friendshipAcceptedAt?: string;
-  meetupHappened?: boolean;
-  ratedBy?: Record<string, number>;
+  friendshipAcceptedAt?: string; // Track friendship accepted timestamp for expiration
+  meetupHappened?: boolean; // Track if a meetup has been logged/rated
+  ratedBy?: Record<string, number>; // Record of userId to stars given
 }
 
 export interface PublicSnap {
   id: string;
   type: 'image' | 'text';
-  mediaUrl: string;
+  mediaUrl: string; // base64 or placeholder canvas drawing
   caption?: string;
   timestamp: string;
 }
@@ -82,12 +82,12 @@ export interface StorySnap {
 
 export interface DirectMessage {
   id: string;
-  senderId: string;
+  senderId: string; // 'user' or neighbor ID
   receiverId: string;
   timestamp: string;
   type: 'text' | 'image' | 'voice' | 'call_log' | 'video' | 'document';
   text?: string;
-  mediaUrl?: string;
+  mediaUrl?: string; // base64 or placeholder
   audioDurationSec?: number;
   fileName?: string;
   fileSize?: string;
@@ -98,6 +98,8 @@ export interface DirectMessage {
   };
   isUnread?: boolean;
   chatThreadId?: string;
+  
+  // WhatsApp Features
   status?: 'sending' | 'sent' | 'delivered' | 'read';
   replyTo?: {
     msgId: string;
@@ -107,7 +109,7 @@ export interface DirectMessage {
   };
   reactions?: Array<{ userId: string; reaction: string }>;
   deletedForEveryone?: boolean;
-  deletedForUsers?: string[];
+  deletedForUsers?: string[]; // Whitelist of users who clicked Delete For Me o!
   isForwarded?: boolean;
   isStarred?: boolean;
   isEdited?: boolean;
@@ -118,9 +120,9 @@ export interface DirectMessage {
 export interface CallState {
   active: boolean;
   type: 'audio' | 'video';
-  neighborId: string;
+  neighborId: string; // who is being called or calling
   status: 'ringing' | 'connected' | 'disconnected';
-  incoming: boolean;
+  incoming: boolean; // is it an inbound call or outbound
   durationSeconds: number;
   callId?: string;
 }
@@ -146,83 +148,3 @@ export interface MeetupRating {
   review: string;
   createdAt: string;
 }
-
-export interface UserNote {
-  id: string;
-  name: string;
-  avatarColor: string;
-  avatarEmoji: string;
-  text: string;
-}
-
-export interface LocationPreset {
-  name: string;
-  city: string;
-  coords: { lat: number; lng: number };
-  streets: string[];
-}
-
-export interface UserProfile {
-  uid: string;
-  name: string;
-  username: string;
-  displayName?: string;
-  email?: string;
-  phone?: string;
-  bio: string;
-  website?: string;
-  ageRange?: string;
-  gender?: string;
-  interests: string[];
-  communities?: string[];
-  customProfilePhoto?: string | null;
-  statusText?: string;
-  avatarEmoji?: string;
-  avatarColor?: string;
-  verificationLevel?: 'Basic' | 'Verified';
-  trustScore?: number;
-  meetupCount?: number;
-  isUserVisibleOnRadar?: boolean;
-  radarVisibilityMode?: 'everyone' | 'friends' | 'hidden';
-  appLanguage?: string;
-  updatedAt?: string;
-  createdAt?: string;
-}
-
-export interface AppNotification {
-  id: string;
-  recipientId: string;
-  senderId?: string;
-  senderName?: string;
-  senderAvatarEmoji?: string;
-  senderAvatarColor?: string;
-  title: string;
-  message: string;
-  type: 'friend_request' | 'friend_accepted' | 'message' | 'story_reaction' | 'meetup_proposed' | 'meetup_confirmed' | 'system';
-  isRead: boolean;
-  timestamp: string;
-  actionUrl?: string;
-  metadata?: Record<string, any>;
-}
-
-export interface FeedPost {
-  id: string;
-  authorId: string;
-  authorName: string;
-  authorAvatar?: string;
-  timestamp: string;
-  caption: string;
-  mediaUrl?: string;
-  locationTag?: string;
-  likes: number;
-  likedByMe?: boolean;
-  comments: Array<{
-    id: string;
-    authorName: string;
-    text: string;
-    timestamp: string;
-  }>;
-}
-
-export type ActiveTabType = 'radar' | 'chats' | 'explore' | 'profile' | 'chat' | 'status' | 'menu';
-export type AppThemeType = 'light' | 'dark';
