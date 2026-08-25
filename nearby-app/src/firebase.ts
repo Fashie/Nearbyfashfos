@@ -105,16 +105,20 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     window.dispatchEvent(event);
   }
 
-  // If we hit permission or quota errors, seamlessly fall back to local storage
-  const isPermissionError = errInfo.error.toLowerCase().includes("permission") || 
-                            errInfo.error.toLowerCase().includes("insufficient") ||
-                            errInfo.error.toLowerCase().includes("unauthorized");
-  if (isPermissionError) {
-    isFallbackMode = true;
-    triggerAllFallbackListeners();
-    console.warn("Firestore permission blocked on cloud database. Automatically fell back to secure, high-fidelity local-first storage mode!");
-    return;
-  }
+  // NOTE: Permission-denied errors are almost always transient (e.g. a security-rule
+  // check firing a split-second before the auth token attaches after login/reload) or
+  // a real rules bug that needs fixing — they are NOT a signal that Firestore itself is
+  // unreachable. This used to silently flip the whole app into a per-device, local-only
+  // fake database (see isFallbackMode below), which meant one flaky permission error
+  // would cut a user off from the shared cloud data entirely: their profile photo,
+  // highlights, chat messages, and location writes would start going to a local
+  // localStorage stub that no other user/device can see, while still rendering fine
+  // to that one user - which is exactly what caused DPs/highlights/posts to
+  // intermittently "disappear and come back", one side of a chat never receiving
+  // messages, and new accounts not showing up on the radar/explore pages for anyone
+  // else. We no longer treat permission errors as a reason to go local - they're
+  // logged/surfaced (see the firestore-error-event dispatch above) so real rule
+  // problems get noticed and fixed instead of silently masked.
 }
 
 // -------------------------------------------------------------
@@ -149,14 +153,18 @@ function saveFallbackDb() {
 
 function isQuotaError(err: any): boolean {
   if (!err) return false;
+  // Only genuine Firebase quota/resource-exhaustion should ever divert this app to the
+  // local-only fallback store. Permission/insufficient/unauthorized/generic "limit" text
+  // used to match here too, which meant a single transient permission-denied error
+  // (extremely common right after login, before the auth token is attached) would
+  // permanently cut that device off from the real, shared Firestore data for the rest
+  // of the session - see the long comment in handleFirestoreError above for the full
+  // explanation of the bugs this caused.
+  const code = (err.code || '').toLowerCase();
   const msg = (err.message || String(err)).toLowerCase();
-  return msg.includes('quota') || 
-         msg.includes('exhausted') || 
-         msg.includes('resource-exhausted') || 
-         msg.includes('limit') ||
-         msg.includes('permission') ||
-         msg.includes('insufficient') ||
-         msg.includes('unauthorized');
+  return code === 'resource-exhausted' ||
+         msg.includes('resource-exhausted') ||
+         msg.includes('quota exceeded');
 }
 
 // Deep Merging helper for updates/merge operations
