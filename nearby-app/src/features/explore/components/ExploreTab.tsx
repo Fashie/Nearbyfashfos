@@ -927,7 +927,9 @@ const ExploreTab = React.memo(function ExploreTab({
         const storagePath = `posts/${currentUid}/${Date.now()}.${fileExtension}`;
         finalMediaUrl = await uploadToStorage(newPostMedia, storagePath);
       } catch (uploadErr) {
-        console.warn("Storage upload failed for post image, using original:", uploadErr);
+        console.error("Storage upload failed for post image:", uploadErr);
+        showToast('Image upload failed. Please check your connection and try again.');
+        return;
       }
     }
 

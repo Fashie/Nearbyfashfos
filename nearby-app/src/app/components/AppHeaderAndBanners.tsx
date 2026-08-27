@@ -898,7 +898,7 @@ export default function AppHeaderAndBanners() {
               <span>🔥 Daily Database Quota Limit Exceeded</span>
             </p>
             <p className="opacity-80 text-[11px] leading-relaxed">
-              The public shared database has reached its free limit of 50,000 daily read/write actions. Safe offline local fallback mode has been activated. Connect your own free Firebase project in AI Studio to get your own unlimited database space!
+              Firebase rejected a database operation because the project quota or configuration was reached. Your data is not being silently stored in a device-only fallback. Check your Firebase project quota, billing, and security rules, then retry.
             </p>
           </div>
           <button 

@@ -1,149 +1,251 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Default catch-all denies everything by default
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // Helper functions
-    function isSignedIn() {
+    function signedIn() {
       return request.auth != null;
     }
 
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
     }
 
-    // Users collection
+    function isUser(uid) {
+      return signedIn() && uid == request.auth.uid;
+    }
+
+    function isParticipant(data) {
+      return signedIn() && data.participants is list && request.auth.uid in data.participants;
+    }
+
+    function isCallParticipant(data) {
+      return signedIn() && (
+        data.callerUID == request.auth.uid ||
+        data.receiverUID == request.auth.uid ||
+        data.callerId == request.auth.uid ||
+        data.receiverId == request.auth.uid
+      );
+    }
+
+    // Users are public profiles, but only the owner can create/delete/update
+    // their own profile. The only server/client-side aggregate fields that
+    // another authenticated user may update are the rating aggregates.
     match /users/{userId} {
-      allow read: if isSignedIn();
+      allow read: if signedIn();
       allow create: if isOwner(userId);
       allow delete: if isOwner(userId);
       allow update: if isOwner(userId) || (
-        isSignedIn() && 
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ratingsCount', 'totalRatingPoints', 'trustScore', 'meetupsCompleted', 'meetupHappened', 'ratedBy'])
+        signedIn() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'ratingsCount', 'totalRatingPoints', 'trustScore', 'meetupsCompleted',
+          'meetupHappened', 'ratedBy'
+        ])
+      ) || (
+        signedIn() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friendIds']) &&
+        (request.resource.data.friendIds.hasAll([request.auth.uid]) || resource.data.friendIds.hasAll([request.auth.uid]))
       );
 
-      // Sub-collections inside users
+      match /stories/{storyId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isOwner(userId);
+      }
+
+      match /posts/{postId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isOwner(userId);
+      }
+
+      match /highlights/{highlightId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isOwner(userId);
+      }
+
       match /messages/{messageId} {
         allow read, write: if isOwner(userId);
       }
-      match /stories/{storyId} {
-        allow read: if isSignedIn();
-        allow write: if isOwner(userId);
-      }
-      match /posts/{postId} {
-        allow read: if isSignedIn();
-        allow write: if isOwner(userId);
-      }
-      match /highlights/{highlightId} {
-        allow read: if isSignedIn();
-        allow write: if isOwner(userId);
-      }
+
       match /calls/{callId} {
-        allow read, write: if isSignedIn();
+        allow read: if isOwner(userId) || isCallParticipant(resource.data);
+        allow create, update: if isOwner(userId) || isCallParticipant(request.resource.data);
+        allow delete: if isOwner(userId) || isCallParticipant(resource.data);
       }
     }
 
-    // Settings collection
     match /settings/{userId} {
       allow read, write: if isOwner(userId);
     }
 
-    // Visibility Settings collection
     match /visibilitySettings/{userId} {
       allow read, write: if isOwner(userId);
     }
 
-    // Top-level collections
-    match /groups/{groupId} {
-      allow read, write: if isSignedIn();
-      
-      match /messages/{messageId} {
-        allow read, write: if isSignedIn();
-      }
-    }
-
     match /locations/{userId} {
-      allow read: if isSignedIn();
-      allow write: if isOwner(userId);
+      allow read: if signedIn() && (
+        resource.data.radarEnabled == true || isOwner(userId)
+      );
+      allow create, update: if isOwner(userId);
+      allow delete: if isOwner(userId);
     }
 
-    match /friendships/{friendshipId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /friend_requests/{requestId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /friend_requests_incoming/{requestId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /friend_requests_outgoing/{requestId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /friendRequests/{requestId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /Conversations/{conversationId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /messages/{messageId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /direct_messages/{messageId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /notifications/{notificationId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /communities/{communityId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /community_discussions/{discussionId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /posts/{postId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
-    }
-
-    match /meetups/{meetupId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /meetupRatings/{ratingId} {
-      allow read, write: if isSignedIn();
-    }
-
+    // Live radar data is public only when the owner explicitly enables radar.
+    // The client queries radarEnabled == true and separately subscribes to its
+    // own document so hidden users remain inaccessible.
     match /liveLocations/{userId} {
-      allow read: if isSignedIn();
-      allow write: if isOwner(userId);
-    }
-
-    match /safeMeetups/{placeId} {
-      allow read, write: if isSignedIn();
+      allow read: if signedIn() && (resource.data.radarEnabled == true || isOwner(userId));
+      allow create, update: if isOwner(userId);
+      allow delete: if isOwner(userId);
     }
 
     match /presence/{userId} {
-      allow read: if isSignedIn();
-      allow write: if isOwner(userId);
+      allow read: if signedIn();
+      allow create, update, delete: if isOwner(userId);
+    }
+
+    // Direct messages must identify both participants and the authenticated
+    // sender. Queries use array-contains(currentUser.uid), so Firestore can
+    // prove the read authorization server-side.
+    match /direct_messages/{messageId} {
+      allow read: if isParticipant(resource.data);
+      allow create: if signedIn() &&
+        isParticipant(request.resource.data) &&
+        request.resource.data.senderId == request.auth.uid;
+      allow update: if isParticipant(resource.data) && isParticipant(request.resource.data);
+      allow delete: if isParticipant(resource.data);
+    }
+
+    match /messages/{messageId} {
+      allow read: if isParticipant(resource.data);
+      allow create: if signedIn() && isParticipant(request.resource.data) && request.resource.data.senderId == request.auth.uid;
+      allow update, delete: if isParticipant(resource.data);
+    }
+
+    match /friend_requests/{requestId} {
+      allow read: if signedIn() && (
+        resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid
+      );
+      allow create: if signedIn() && request.resource.data.senderId == request.auth.uid;
+      allow update: if signedIn() && (
+        resource.data.receiverId == request.auth.uid || resource.data.senderId == request.auth.uid
+      );
+      allow delete: if signedIn() && (
+        resource.data.receiverId == request.auth.uid || resource.data.senderId == request.auth.uid
+      );
+    }
+
+    // Legacy request collections are retained for compatibility but scoped to
+    // the authenticated user's ID where the schema permits it.
+    match /friend_requests_incoming/{requestId} {
+      allow read, write: if signedIn() && (
+        resource.data.receiverId == request.auth.uid || request.resource.data.receiverId == request.auth.uid
+      );
+    }
+    match /friend_requests_outgoing/{requestId} {
+      allow read, write: if signedIn() && (
+        resource.data.senderId == request.auth.uid || request.resource.data.senderId == request.auth.uid
+      );
+    }
+    match /friendRequests/{requestId} {
+      allow read, write: if signedIn() && (
+        resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid ||
+        request.resource.data.senderId == request.auth.uid || request.resource.data.receiverId == request.auth.uid
+      );
+    }
+
+    match /friendships/{friendshipId} {
+      allow read, write: if signedIn() && (
+        resource.data.userId == request.auth.uid || resource.data.friendId == request.auth.uid ||
+        request.resource.data.userId == request.auth.uid || request.resource.data.friendId == request.auth.uid
+      );
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.senderId == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /meetups/{meetupId} {
+      allow read: if signedIn() && (
+        resource.data.hostUID == request.auth.uid || resource.data.participantUID == request.auth.uid
+      );
+      allow create: if signedIn() && request.resource.data.hostUID == request.auth.uid;
+      allow update: if signedIn() && (
+        resource.data.hostUID == request.auth.uid ||
+        (resource.data.participantUID == request.auth.uid &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']))
+      );
+      allow delete: if signedIn() && resource.data.hostUID == request.auth.uid;
+    }
+
+    match /meetupRatings/{ratingId} {
+      allow read: if signedIn() && (
+        resource.data.reviewerUID == request.auth.uid || resource.data.receiverUID == request.auth.uid
+      );
+      allow create: if signedIn() && request.resource.data.reviewerUID == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.reviewerUID == request.auth.uid;
+    }
+
+    match /groups/{groupId} {
+      allow read: if signedIn() && (
+        resource.data.memberIds is list && request.auth.uid in resource.data.memberIds
+      );
+      allow create: if signedIn() && request.resource.data.memberIds is list && request.auth.uid in request.resource.data.memberIds;
+      allow update, delete: if signedIn() && resource.data.memberIds is list && request.auth.uid in resource.data.memberIds;
+
+      match /messages/{messageId} {
+        allow read: if signedIn() &&
+          get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds is list &&
+          request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
+        allow create, update, delete: if signedIn() &&
+          get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds is list &&
+          request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
+      }
+    }
+
+    match /communities/{communityId} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow update, delete: if signedIn() && (
+        resource.data.ownerId == request.auth.uid || resource.data.createdBy == request.auth.uid
+      );
+    }
+
+    match /community_discussions/{discussionId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.authorId == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.authorId == request.auth.uid;
+    }
+
+    match /posts/{postId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.authorId == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.authorId == request.auth.uid;
     }
 
     match /calls/{callId} {
-      allow read, write: if isSignedIn();
+      allow read: if isCallParticipant(resource.data);
+      allow create: if isCallParticipant(request.resource.data);
+      allow update: if isCallParticipant(resource.data) || isCallParticipant(request.resource.data);
+      allow delete: if isCallParticipant(resource.data);
+    }
+
+    match /reports/{reportId} {
+      allow create: if signedIn() && request.resource.data.reporterId == request.auth.uid;
+      allow read: if signedIn() && request.resource.data.reporterId == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.reporterId == request.auth.uid;
+    }
+
+    match /safeMeetups/{placeId} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow update, delete: if signedIn() && (
+        resource.data.createdBy == request.auth.uid || resource.data.ownerId == request.auth.uid
+      );
+    }
+
+    // Everything not explicitly listed above is denied.
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
