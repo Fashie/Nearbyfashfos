@@ -135,32 +135,6 @@ const GOOGLE_MAPS_API_KEY =
 const hasValidGoogleMapsKey = Boolean(GOOGLE_MAPS_API_KEY) && GOOGLE_MAPS_API_KEY !== 'YOUR_API_KEY';
 
 /**
- * WebRTC ICE configuration. STUN handles direct paths; a configured TURN relay is
- * required for users behind restrictive NAT/firewalls and is strongly recommended
- * for production reliability. Credentials are supplied through Vite environment variables.
- */
-function getWebRTCIceServers(): RTCIceServer[] {
-  const env = (import.meta as any).env || {};
-  const turnUrl = env.VITE_TURN_SERVER_URL || env.VITE_TURN_URL || '';
-  const turnUsername = env.VITE_TURN_USERNAME || '';
-  const turnCredential = env.VITE_TURN_CREDENTIAL || '';
-
-  const servers: RTCIceServer[] = [
-    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }
-  ];
-
-  if (turnUrl && turnUsername && turnCredential) {
-    servers.push({
-      urls: turnUrl,
-      username: turnUsername,
-      credential: turnCredential
-    });
-  }
-
-  return servers;
-}
-
-/**
  * Nearby application controller.
  *
  * This hook owns the existing application state, effects, and event handlers.
@@ -272,12 +246,42 @@ export function useNearbyController() {
       // Record this network operation immediately to prevent race conditions o!
       lastLocationWriteRef.current = { lat, lng, time: now };
 
-      // Reverse geocoding was intentionally removed from Nearby.
-      // GPS coordinates remain authoritative for proximity/radar; the nearest local
-      // preset is used only as a non-exact human-readable area label.
-      finalTown = closestPreset.city.split(',')[0]?.trim() || finalTown || 'Osogbo';
-      finalRoad = closestPreset.streets[0] || finalRoad || 'Nearby area';
-      if (!finalState) finalState = closestPreset.city.split(',').pop()?.trim() || 'Osun';
+      // Perform a real reverse geocoding fetch call to Nominatim OpenStreetMap to write the actual street o!
+      let resolvedRoad = '';
+      let resolvedTown = '';
+      let resolvedState = '';
+
+      try {
+        const geocodeRes = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`, {
+          headers: {
+            'Accept-Language': 'en'
+          }
+        });
+        if (geocodeRes.ok) {
+          const data = await geocodeRes.json();
+          if (data && data.address) {
+            resolvedRoad = data.address.road || data.address.suburb || data.address.neighbourhood || '';
+            resolvedTown = data.address.city_district || data.address.town || data.address.city || data.address.village || '';
+            resolvedState = data.address.state || data.address.county || '';
+          }
+        }
+      } catch (err) {
+        console.warn("Reverse geocode attempt failed o, utilizing offline distance presets:", err);
+      }
+
+      if (resolvedRoad) {
+        finalRoad = resolvedRoad;
+        if (resolvedTown) finalTown = resolvedTown;
+        if (resolvedState) finalState = resolvedState;
+      } else {
+        // Use the closest preset neighborhood details as fallback
+        finalTown = closestPreset.city.split(',')[0]?.trim() || 'Osogbo';
+        finalRoad = closestPreset.streets[0] || 'Gbongan Road';
+      }
+
+      if (!finalRoad) {
+        finalRoad = "Gbongan Road";
+      }
 
       const exactPlace = finalRoad;
       const fullAddrLabel = `${exactPlace}, ${finalTown}, ${finalState}`;
@@ -420,8 +424,6 @@ export function useNearbyController() {
   const [onboardingStreetName, setOnboardingStreetName] = useState<string>('Oketunji Street');
 
   const [neighbors, setNeighbors] = useState<Neighbor[]>(INITIAL_NEIGHBORS);
-  // Live GPS coordinates are the authoritative source for proximity calculations.
-  const [liveLocationMap, setLiveLocationMap] = useState<Record<string, { latitude: number; longitude: number; updatedAt?: string; radarEnabled?: boolean }>>({});
   const [selectedNeighborState, setSelectedNeighbor] = useState<Neighbor | null>(null); // For active chat thread
 
   // Load real presence in real-time o!
@@ -642,10 +644,7 @@ export function useNearbyController() {
           const storagePath = `stories/${currentUser.uid}/${Date.now()}.${fileExtension}`;
           finalMediaUrl = await uploadToStorage(finalMediaUrl, storagePath);
         } catch (uploadErr) {
-          console.error("Storage upload failed for story status:", uploadErr);
-          setAudioFeedback("We couldn't upload that status. Check your connection and try again.");
-          setTimeout(() => setAudioFeedback(""), 3000);
-          return;
+          console.warn("Storage upload failed for story status, using original:", uploadErr);
         }
       }
 
@@ -731,9 +730,16 @@ export function useNearbyController() {
           setCustomProfilePhoto(finalUrl);
           setOnboardingPhoto(finalUrl);
         } catch (err) {
-          console.error("Failed to upload profile photo to storage:", err);
-          setAudioFeedback("Profile photo upload failed. Please try again.");
-          setTimeout(() => setAudioFeedback(""), 3000);
+          console.warn("Failed to upload profile photo to storage, keeping local/dataUrl:", err);
+        }
+
+        // Firestore documents cap out around 1MB. If Storage upload silently failed
+        // above, finalUrl is still a full base64 data: URL and can blow that limit on
+        // its own - refuse early with a clear message instead of a doomed, silent setDoc.
+        if (finalUrl.startsWith('data:') && finalUrl.length > 700000) {
+          console.error(`Profile photo still base64 after upload attempt (${finalUrl.length} bytes) - Firebase Storage likely isn't working. Check Storage is enabled for this project and its security rules.`);
+          setAudioFeedback("⚠️ Photo too large to save without cloud Storage working - upload didn't persist. Check Firebase Storage setup.");
+          setTimeout(() => setAudioFeedback(""), 4000);
           return;
         }
 
@@ -755,6 +761,13 @@ export function useNearbyController() {
         } catch (dbErr) {
           console.error("Failed to update profile photo in Firestore:", dbErr);
           handleFirestoreError(dbErr, OperationType.UPDATE, `users/${fUser.uid}`);
+          const errMsg = dbErr instanceof Error ? dbErr.message : String(dbErr);
+          setAudioFeedback(
+            errMsg.toLowerCase().includes('longer than') || errMsg.toLowerCase().includes('exceeds')
+              ? "⚠️ Photo too large to save. Not persisted."
+              : "⚠️ Photo failed to save to the cloud - it will disappear on next login."
+          );
+          setTimeout(() => setAudioFeedback(""), 4000);
         }
       }
     };
@@ -775,13 +788,13 @@ export function useNearbyController() {
       const fUser = auth.currentUser;
 
       if (currentMode === 'highlight') {
-        let title = "Vibe";
-        try {
-          const prompted = window.prompt("Enter a lovely name for this highlight:", "Vibe");
-          if (prompted && prompted.trim()) {
-            title = prompted.trim();
-          }
-        } catch (_) {}
+        // window.prompt() is a blocking, synchronous browser dialog. In a WebView shell
+        // that doesn't implement the native prompt bridge (very common for hybrid/mobile
+        // app wrappers), calling it can hang the JS thread forever instead of returning -
+        // which would freeze this entire upload with no error and no success message ever
+        // firing. Auto-name the highlight instead so the upload can never get stuck here;
+        // rename support can be added later as a proper in-app modal if needed.
+        const title = `Highlight ${new Date().toLocaleDateString()}`;
 
         const hlId = `usr-hl-${Date.now()}`;
         
@@ -804,12 +817,17 @@ export function useNearbyController() {
             const storagePath = `users/${fUser.uid}/highlights/${hlId}.${fileExtension}`;
             finalMediaUrl = await uploadToStorage(file, storagePath);
           } catch (uploadErr) {
-            console.error("Storage upload failed for highlight:", uploadErr);
-            setAudioFeedback("Highlight upload failed. Please try again.");
-            setTimeout(() => setAudioFeedback(""), 3000);
-            setUserHighlights(prev => prev.filter(h => h.id !== hlId));
-            return;
+            console.warn("Storage upload failed for highlight, using local fallback:", uploadErr);
           }
+        }
+
+        // Firestore documents are capped at ~1MB. If Storage upload silently failed above,
+        // finalMediaUrl is still a full base64 data: URL, which is often big enough to blow
+        // that limit on its own - and setDoc would throw on the write below. Catch it here
+        // with a clear message instead of a cryptic Firestore error, and log the real size
+        // so we can tell whether Storage is actually the thing failing.
+        if (finalMediaUrl.startsWith('data:')) {
+          console.warn(`Highlight ${hlId} still a base64 data URL after upload attempt - Storage likely failed. Size: ${finalMediaUrl.length} bytes.`);
         }
 
         const finalHlDoc = {
@@ -826,13 +844,24 @@ export function useNearbyController() {
         });
 
         if (fUser) {
-          try {
-            const hlRef = doc(db, 'users', fUser.uid, 'highlights', hlId);
-            await setDoc(hlRef, finalHlDoc);
-            setAudioFeedback("Highlight uploaded & persisted! 📲");
-          } catch (err) {
-            console.error("Firestore write highlight error:", err);
-            handleFirestoreError(err, OperationType.WRITE, `users/${fUser.uid}/highlights/${hlId}`);
+          if (finalMediaUrl.startsWith('data:') && finalMediaUrl.length > 700000) {
+            console.error(`Highlight ${hlId} too large to persist as base64 (${finalMediaUrl.length} bytes) - Firebase Storage likely isn't working.`);
+            setAudioFeedback("⚠️ Highlight too large to save without cloud Storage working - it won't persist. Check Firebase Storage setup.");
+          } else {
+            try {
+              const hlRef = doc(db, 'users', fUser.uid, 'highlights', hlId);
+              await setDoc(hlRef, finalHlDoc);
+              setAudioFeedback("Highlight uploaded & persisted! 📲");
+            } catch (err) {
+              console.error("Firestore write highlight error:", err);
+              handleFirestoreError(err, OperationType.WRITE, `users/${fUser.uid}/highlights/${hlId}`);
+              const errMsg = err instanceof Error ? err.message : String(err);
+              setAudioFeedback(
+                errMsg.toLowerCase().includes('longer than') || errMsg.toLowerCase().includes('exceeds')
+                  ? "⚠️ Highlight too large to save (image needs more compression). Not persisted."
+                  : "⚠️ Highlight failed to save to the cloud - it will disappear on next login."
+              );
+            }
           }
         } else {
           setAudioFeedback("Highlight added locally!");
@@ -862,12 +891,12 @@ export function useNearbyController() {
             const storagePath = `users/${fUser.uid}/posts/${postId}.${fileExtension}`;
             finalMediaUrl = await uploadToStorage(file, storagePath);
           } catch (uploadErr) {
-            console.error("Storage upload failed for post:", uploadErr);
-            setAudioFeedback("Post upload failed. Please try again.");
-            setTimeout(() => setAudioFeedback(""), 3000);
-            setUserPosts(prev => prev.filter(p => p.id !== postId));
-            return;
+            console.warn("Storage upload failed for post, using local fallback:", uploadErr);
           }
+        }
+
+        if (finalMediaUrl.startsWith('data:')) {
+          console.warn(`Post ${postId} still base64 after upload attempt - Storage likely failed. Size: ${finalMediaUrl.length} bytes.`);
         }
 
         const finalPostDoc = {
@@ -892,19 +921,30 @@ export function useNearbyController() {
         });
 
         if (fUser) {
-          try {
-            const postRef = doc(db, 'users', fUser.uid, 'posts', postId);
-            await setDoc(postRef, finalPostDoc);
-            setAudioFeedback("Post added to your feed! 📸");
-          } catch (err) {
-            console.error("Firestore write post error:", err);
-            handleFirestoreError(err, OperationType.WRITE, `users/${fUser.uid}/posts/${postId}`);
+          if (finalMediaUrl.startsWith('data:') && finalMediaUrl.length > 700000) {
+            console.error(`Post ${postId} too large to persist as base64 (${finalMediaUrl.length} bytes) - Firebase Storage likely isn't working.`);
+            setAudioFeedback("⚠️ Post too large to save without cloud Storage working - it won't persist. Check Firebase Storage setup.");
+          } else {
+            try {
+              const postRef = doc(db, 'users', fUser.uid, 'posts', postId);
+              await setDoc(postRef, finalPostDoc);
+              setAudioFeedback("Post added to your feed! 📸");
+            } catch (err) {
+              console.error("Firestore write post error:", err);
+              handleFirestoreError(err, OperationType.WRITE, `users/${fUser.uid}/posts/${postId}`);
+              const errMsg = err instanceof Error ? err.message : String(err);
+              setAudioFeedback(
+                errMsg.toLowerCase().includes('longer than') || errMsg.toLowerCase().includes('exceeds')
+                  ? "⚠️ Post too large to save. Not persisted."
+                  : "⚠️ Post failed to save to the cloud - it will disappear on next login."
+              );
+            }
           }
         } else {
           setAudioFeedback("Post added locally!");
         }
       }
-      setTimeout(() => setAudioFeedback(""), 3000);
+      setTimeout(() => setAudioFeedback(""), 4000);
     };
     reader.readAsDataURL(file);
   };
@@ -1578,17 +1618,6 @@ export function useNearbyController() {
       
       const userDocRef = doc(db, 'users', currentUser.uid);
       const myNoteText = activeNotes.find(n => n.id === 'user-note-me')?.text || 'Checking in on nearby...';
-
-      // Onboarding previews may be data URLs. Upload them before the profile is
-      // persisted so Firestore never becomes a media/blob store.
-      let persistedProfilePhoto = onboardingPhoto;
-      if (onboardingPhoto?.startsWith('data:')) {
-        const extension = onboardingPhoto.includes('image/png') ? 'png' : onboardingPhoto.includes('image/gif') ? 'gif' : 'jpeg';
-        persistedProfilePhoto = await uploadToStorage(
-          onboardingPhoto,
-          `profiles/${currentUser.uid}/onboarding-${Date.now()}.${extension}`
-        );
-      }
       
       const finalDoc = {
         uid: currentUser.uid,
@@ -1610,7 +1639,7 @@ export function useNearbyController() {
         userGroupInvitePolicy: userGroupInvitePolicy,
         userGroupCallPolicy: userGroupCallPolicy,
         myNoteText: myNoteText,
-        customProfilePhoto: persistedProfilePhoto,
+        customProfilePhoto: onboardingPhoto,
         appLanguage: onboardingState || 'Lagos',
         streetName: onboardingStreetName || 'Yaba',
         latitude: onboardingCoords ? onboardingCoords.lat : 6.5095,
@@ -1638,7 +1667,7 @@ export function useNearbyController() {
       setUserDisplayName(cleanName);
       setUserUsername(cleanUsername);
       setUserBio(onboardingBio);
-      setCustomProfilePhoto(persistedProfilePhoto);
+      setCustomProfilePhoto(onboardingPhoto);
       setAppLanguage((onboardingState || 'Lagos') as any);
       setUserAgeRange(onboardingAgeRange);
       setUserGender(onboardingGender);
@@ -1664,7 +1693,8 @@ export function useNearbyController() {
           username: cleanUsername,
           avatar: onboardingPhoto || currentUser.photoURL,
           authType: isGoogle ? 'google' : 'credential',
-          emailOrPhone: isGoogle ? undefined : authEmailOrPhone || currentUser.email || currentUser.phoneNumber
+          emailOrPhone: isGoogle ? undefined : authEmailOrPhone || currentUser.email || currentUser.phoneNumber,
+          password: isGoogle ? undefined : authPassword || undefined
         });
         localStorage.setItem('nearby_saved_accounts', JSON.stringify(accounts));
         loadLocalAccountsFromDisk();
@@ -1884,7 +1914,8 @@ export function useNearbyController() {
                 username: finalUsername,
                 avatar: data.customProfilePhoto || user.photoURL || null,
                 authType: isGoogle ? 'google' : 'credential',
-                emailOrPhone: isGoogle ? undefined : authEmailOrPhone || user.email || user.phoneNumber
+                emailOrPhone: isGoogle ? undefined : authEmailOrPhone || user.email || user.phoneNumber,
+                password: isGoogle ? undefined : authPassword || undefined
               });
               localStorage.setItem('nearby_saved_accounts', JSON.stringify(accounts));
               loadLocalAccountsFromDisk();
@@ -1960,7 +1991,8 @@ export function useNearbyController() {
                 username: defaultUsername,
                 avatar: user.photoURL || null,
                 authType: isGoogle ? 'google' : 'credential',
-                emailOrPhone: isGoogle ? undefined : authEmailOrPhone || user.email || user.phoneNumber
+                emailOrPhone: isGoogle ? undefined : authEmailOrPhone || user.email || user.phoneNumber,
+                password: isGoogle ? undefined : authPassword || undefined
               });
               localStorage.setItem('nearby_saved_accounts', JSON.stringify(accounts));
               loadLocalAccountsFromDisk();
@@ -2011,21 +2043,42 @@ export function useNearbyController() {
         setIsProfileLoaded(false);
         // user is null. Check if we can auto-restore the session (handles sandboxed iframe restrictions) o!
         const lastUid = localStorage.getItem('nearby_current_uid');
+        const rawAccounts = localStorage.getItem('nearby_saved_accounts');
+        let restored = false;
         const isInitialLoad = !autoLoginAttemptedRef.current;
  
-        // Firebase Auth persistence is the only source of truth for authentication.
-        // Never store or replay passwords from localStorage.
-        if (lastUid && isInitialLoad) {
+        if (lastUid && rawAccounts && !autoLoginAttemptedRef.current) {
           autoLoginAttemptedRef.current = true;
+          try {
+            const accounts = JSON.parse(rawAccounts);
+            const activeAcc = accounts.find((a: any) => a.uid === lastUid);
+            if (activeAcc && activeAcc.authType === 'credential' && activeAcc.emailOrPhone && activeAcc.password) {
+              restored = true;
+              setAudioFeedback("Restoring session...");
+              let finalEmail = activeAcc.emailOrPhone.trim();
+              if (!finalEmail.includes('@')) {
+                const cleanPhone = finalEmail.replace(/\s+/g, '').replace(/[^\d+]/g, '');
+                finalEmail = `phone_${cleanPhone}@nearby.com`;
+              }
+              await signInWithEmailAndPassword(auth, finalEmail, activeAcc.password.trim());
+              setAudioFeedback("Session restored.");
+              setTimeout(() => setAudioFeedback(""), 2000);
+            }
+          } catch (err) {
+            console.warn("Session auto-restore error:", err);
+            restored = false;
+          }
         }
  
-        if (lastUid && isInitialLoad) {
-          setShowLandingMode(false);
-          setAuthIsSignUp(false);
+        if (!restored) {
+          if (lastUid && isInitialLoad) {
+            setShowLandingMode(false);
+            setAuthIsSignUp(false);
+          }
+          localStorage.removeItem('nearby_current_uid');
+          setIsSyncing(false);
+          setAuthLoading(false);
         }
-        localStorage.removeItem('nearby_current_uid');
-        setIsSyncing(false);
-        setAuthLoading(false);
       }
     });
 
@@ -2270,8 +2323,7 @@ export function useNearbyController() {
         const storagePath = `${folder}/${fUser.uid}/${Date.now()}.${fileExtension}`;
         finalMediaUrl = await uploadToStorage(finalMediaUrl, storagePath);
       } catch (uploadErr) {
-        console.error("Storage upload failed for message media:", uploadErr);
-        throw uploadErr;
+        console.warn("Storage upload failed, using original url:", uploadErr);
       }
     }
 
@@ -2315,30 +2367,24 @@ export function useNearbyController() {
         const msgDocRef = doc(db, 'direct_messages', msg.id);
         await setDoc(msgDocRef, dmBody, { merge: true });
 
-        // Notifications are secondary. A notification failure must NEVER make a successfully
-        // persisted chat message look like it failed.
+        // Add real-time notification
         if (msgBody.type !== 'call_log' && !msg.reactions && !msg.deletedForEveryone) {
-          try {
-            const senderName = dmBody.senderId === fUser.uid
-              ? (currentUser?.name || 'User')
-              : (neighbors.find(n => n.id === dmBody.senderId)?.name || 'A neighbor');
-            const previewText = msgBody.text || 'Sent media';
-            await createNotification({
-              userId: dmBody.receiverId,
-              senderId: dmBody.senderId,
-              senderName,
-              type: 'message',
-              title: 'New Message',
-              message: `${senderName}: ${previewText}`
-            });
-          } catch (notificationError) {
-            console.warn('Message saved, but notification delivery failed:', notificationError);
-          }
+          const senderName = dmBody.senderId === fUser.uid
+            ? (currentUser?.name || 'User')
+            : (neighbors.find(n => n.id === dmBody.senderId)?.name || 'A neighbor');
+          const previewText = msgBody.text || 'Sent media';
+          await createNotification({
+            userId: dmBody.receiverId,
+            senderId: dmBody.senderId,
+            senderName,
+            type: 'message',
+            title: 'New Message',
+            message: `${senderName}: ${previewText}`
+          });
         }
       }
     } catch (err) {
-      console.error('Firestore message write failed:', err);
-      throw err;
+      console.warn("Firestore message write avoided/failed (quota/offline fallback):", err);
     }
   };
 
@@ -2623,30 +2669,21 @@ export function useNearbyController() {
 
       _setChatMessages(prev => {
         const combined = { ...prev };
-
-        // Replace cloud-backed threads with the authoritative snapshot while preserving
-        // optimistic messages that have not appeared in the snapshot yet.
-        Object.keys(grouped).forEach(key => {
-          const optimistic = (combined[key] || []).filter(m =>
-            m.status === 'sending' && !grouped[key].some(remote => remote.id === m.id)
-          );
-          const merged = [...grouped[key], ...optimistic];
-          merged.sort((a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime());
-          combined[key] = merged;
-        });
-
-        // Clear cloud threads that disappeared from Firestore, but never touch simulated
-        // neighbors/groups or optimistic messages for other local threads.
+        
+        // Remove old direct message threads to ensure no stale local messages remain, but preserve simulated ones
         Object.keys(combined).forEach(key => {
-          if (!key.startsWith('group-') && !key.startsWith('sim-group-') && !key.startsWith('nb-') && !grouped[key]) {
-            const pending = (combined[key] || []).filter(m => m.status === 'sending' || m.status === 'failed');
-            if (pending.length) combined[key] = pending;
-            else delete combined[key];
+          if (!key.startsWith('group-') && !key.startsWith('sim-group-') && !key.startsWith('nb-')) {
+            delete combined[key];
           }
         });
-
+        
+        // Merge the fresh real-time direct messages from Firestore
+        Object.keys(grouped).forEach(key => {
+          combined[key] = grouped[key];
+        });
+        
         return combined;
-      });;
+      });
     }, (err) => {
       handleFirestoreError(err, OperationType.GET, 'direct_messages');
     });
@@ -3150,46 +3187,6 @@ export function useNearbyController() {
     return () => unsubMe();
   }, [currentUser]);
 
-  // Subscribe to live GPS locations separately from profile documents. This keeps radar
-  // accurate when a user's device moves without requiring a profile rewrite.
-  useEffect(() => {
-    if (!currentUser) {
-      setLiveLocationMap({});
-      return;
-    }
-
-    const publicLiveLocationsQuery = query(
-      collection(db, 'liveLocations'),
-      where('radarEnabled', '==', true)
-    );
-    const ownLiveLocationRef = doc(db, 'liveLocations', currentUser.uid);
-    const next: Record<string, { latitude: number; longitude: number; updatedAt?: string; radarEnabled?: boolean }> = {};
-
-    const applySnapshot = (snapshot: any) => {
-      snapshot.forEach((docSnap: any) => {
-        const data = docSnap.data();
-        const uid = data?.uid || docSnap.id;
-        const latitude = Number(data?.latitude);
-        const longitude = Number(data?.longitude);
-        if (!uid || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
-        next[uid] = { latitude, longitude, updatedAt: data?.updatedAt, radarEnabled: data?.radarEnabled };
-      });
-      setLiveLocationMap({ ...next });
-    };
-
-    const unsubscribePublic = onSnapshot(publicLiveLocationsQuery, applySnapshot, (err) => {
-      console.warn('Nearby public live-location subscription failed:', err);
-    });
-    const unsubscribeOwn = onSnapshot(ownLiveLocationRef, applySnapshot, (err) => {
-      console.warn('Nearby own live-location subscription failed:', err);
-    });
-
-    return () => {
-      unsubscribePublic();
-      unsubscribeOwn();
-    };
-  }, [currentUser?.uid]);
-
   // Load real users from Firestore in real-time
   useEffect(() => {
     if (!currentUser) return;
@@ -3215,21 +3212,17 @@ export function useNearbyController() {
         if (uVisibilityMode === 'hidden' && !hasRelationship) return;
         if (uVisibilityMode === 'friends' && !isUserFriend && !isFriendRequester && !isFriendRequested) return;
 
-        const live = liveLocationMap[u.uid];
-        const userLat = live?.latitude ?? (u.latitude !== undefined ? Number(u.latitude) : undefined);
-        const userLng = live?.longitude ?? (u.longitude !== undefined ? Number(u.longitude) : undefined);
-
         let latOffset = u.latOffset !== undefined ? u.latOffset : (((u.uid.charCodeAt(0) || 0) % 10) - 5) * 0.05;
         let lngOffset = u.lngOffset !== undefined ? u.lngOffset : (((u.uid.charCodeAt(1) || 0) % 10) - 5) * 0.05;
         let distanceMeters = u.distanceMeters !== undefined ? u.distanceMeters : (((u.uid.charCodeAt(2) || 0) % 4) + 1) * 85 + 40;
         
         const activeCoords = userCoords || selectedPreset.coords;
-        if (activeCoords && Number.isFinite(userLat) && Number.isFinite(userLng)) {
-          distanceMeters = Math.max(1, Math.round(calculateHaversineDistance(activeCoords.lat, activeCoords.lng, userLat as number, userLng as number)));
+        if (activeCoords && u.latitude !== undefined && u.longitude !== undefined) {
+          distanceMeters = Math.max(8, Math.round(calculateHaversineDistance(activeCoords.lat, activeCoords.lng, u.latitude, u.longitude)));
           
           // Render precise spatial offset relative to active explorer epicenter
-          latOffset = (userLat as number - activeCoords.lat) * 12;
-          lngOffset = (userLng as number - activeCoords.lng) * 12;
+          latOffset = (u.latitude - activeCoords.lat) * 12; // Adjusted scale for beautiful visual layout density
+          lngOffset = (u.longitude - activeCoords.lng) * 12;
           
           latOffset = Math.max(-0.45, Math.min(0.45, latOffset));
           lngOffset = Math.max(-0.45, Math.min(0.45, lngOffset));
@@ -3271,8 +3264,8 @@ export function useNearbyController() {
           })(),
           latOffset: latOffset,
           lngOffset: lngOffset,
-          latitude: Number.isFinite(userLat) ? userLat : undefined,
-          longitude: Number.isFinite(userLng) ? userLng : undefined,
+          latitude: u.latitude !== undefined ? u.latitude : undefined,
+          longitude: u.longitude !== undefined ? u.longitude : undefined,
           isFriend: isUserFriend,
           ageRange: u.ageRange || '25-34',
           gender: u.gender || 'Male',
@@ -3317,8 +3310,7 @@ export function useNearbyController() {
     radarRadius,
     radarVisibilityMode,
     pendingFriendRequests.join(','),
-    sentFriendRequestIds.join(','),
-    liveLocationMap
+    sentFriendRequestIds.join(',')
   ]);
 
   // Synchronize viewed Neighbor's profile posts & highlights in real-time o!
@@ -4086,8 +4078,13 @@ export function useNearbyController() {
 
       // 2. Setup RTCPeerConnection (STUN fallback)
       const pc = new RTCPeerConnection({
-        iceServers: getWebRTCIceServers(),
-        iceCandidatePoolSize: 10
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' }
+        ]
       });
       pcRef.current = pc;
 
@@ -4174,19 +4171,16 @@ export function useNearbyController() {
         if (event.candidate && currentUser) {
           const candStr = JSON.stringify(event.candidate.toJSON());
           try {
-            await setDoc(doc(db, 'users', neighborId, 'calls', 'active'), {
+            await updateDoc(doc(db, 'users', neighborId, 'calls', 'active'), {
               callerCandidates: arrayUnion(candStr)
-            }, { merge: true });
-            await setDoc(doc(db, 'users', currentUser.uid, 'calls', 'active'), {
+            });
+            await updateDoc(doc(db, 'users', currentUser.uid, 'calls', 'active'), {
               callerCandidates: arrayUnion(candStr)
-            }, { merge: true });
+            });
           } catch (candErr) {
             console.warn("Failed recording Caller ICE Candidate o:", candErr);
           }
         }
-      };
-      pc.onicecandidateerror = (event) => {
-        console.warn('WebRTC caller ICE candidate error:', event);
       };
 
       // 8. Create SDP Offer
@@ -4207,7 +4201,7 @@ export function useNearbyController() {
           receiverCandidates: [],
           callId,
           createdAt: new Date().toISOString()
-        }, { merge: true });
+        });
 
         await setDoc(doc(db, 'users', currentUser.uid, 'calls', 'active'), {
           receiverId: neighborId,
@@ -4220,7 +4214,7 @@ export function useNearbyController() {
           receiverCandidates: [],
           callId,
           createdAt: new Date().toISOString()
-        }, { merge: true });
+        });
       }
     } catch (gUerr) {
       console.error("Camera/Mic WebRTC setup failed:", gUerr);
@@ -4322,8 +4316,13 @@ export function useNearbyController() {
 
         // 2. Setup RTCPeerConnection (STUN fallback)
         const pc = new RTCPeerConnection({
-          iceServers: getWebRTCIceServers(),
-          iceCandidatePoolSize: 10
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' }
+          ]
         });
         pcRef.current = pc;
 
@@ -4410,19 +4409,16 @@ export function useNearbyController() {
           if (event.candidate && currentUser) {
             const candStr = JSON.stringify(event.candidate.toJSON());
             try {
-              await setDoc(doc(db, 'users', callState.neighborId, 'calls', 'active'), {
+              await updateDoc(doc(db, 'users', callState.neighborId, 'calls', 'active'), {
                 receiverCandidates: arrayUnion(candStr)
-              }, { merge: true });
-              await setDoc(doc(db, 'users', currentUser.uid, 'calls', 'active'), {
+              });
+              await updateDoc(doc(db, 'users', currentUser.uid, 'calls', 'active'), {
                 receiverCandidates: arrayUnion(candStr)
-              }, { merge: true });
+              });
             } catch (candErr) {
               console.warn("Failed recording Receiver ICE Candidate o:", candErr);
             }
           }
-        };
-        pc.onicecandidateerror = (event) => {
-          console.warn('WebRTC receiver ICE candidate error:', event);
         };
 
         // 8. Set Remote Description (Caller's Offer)
@@ -4829,66 +4825,57 @@ export function useNearbyController() {
     }
 
     const fUser = auth.currentUser;
-    const isRealNeighbor = Boolean(fUser && !selectedNeighbor.id.startsWith('nb-'));
 
-    if (isRealNeighbor) {
-      try {
-        await saveOrUpdateMessageInFirestore({ ...newMsg, status: 'sent' as const }, selectedNeighbor.id);
-        _setChatMessages(prev => {
-          const list = prev[selectedNeighbor.id] || [];
-          const idx = list.findIndex(m => m.id === msgId);
-          if (idx > -1) {
-            const copy = [...list];
-            copy[idx] = { ...newMsg, status: 'sent' as const };
-            return { ...prev, [selectedNeighbor.id]: copy };
-          }
-          return prev;
-        });
-      } catch (error) {
-        console.error('Real-time message send failed:', error);
-        _setChatMessages(prev => {
-          const list = prev[selectedNeighbor.id] || [];
-          const idx = list.findIndex(m => m.id === msgId);
-          if (idx > -1) {
-            const copy = [...list];
-            copy[idx] = { ...newMsg, status: 'sending' as const };
-            return { ...prev, [selectedNeighbor.id]: copy };
-          }
-          return prev;
-        });
-        setAudioFeedback('Message could not be sent. Check your connection and try again.');
-        setTimeout(() => setAudioFeedback(''), 3000);
+    setTimeout(async () => {
+      const sentMsg = { ...newMsg, status: 'sent' as const };
+      
+      _setChatMessages(prev => {
+        const list = prev[selectedNeighbor.id] || [];
+        const idx = list.findIndex(m => m.id === msgId);
+        if (idx > -1) {
+          const copy = [...list];
+          copy[idx] = sentMsg;
+          return { ...prev, [selectedNeighbor.id]: copy };
+        }
+        return prev;
+      });
+
+      if (fUser && !selectedNeighbor.id.startsWith('nb-')) {
+        await saveOrUpdateMessageInFirestore(sentMsg, selectedNeighbor.id);
       }
-    } else if (selectedNeighbor.id.startsWith('nb-')) {
-      setTimeout(() => {
-        _setChatMessages(prev => {
-          const list = prev[selectedNeighbor.id] || [];
-          const idx = list.findIndex(m => m.id === msgId);
-          if (idx > -1) {
-            const copy = [...list];
-            copy[idx] = { ...newMsg, status: 'delivered' as const };
-            return { ...prev, [selectedNeighbor.id]: copy };
-          }
-          return prev;
-        });
 
+      if (selectedNeighbor.id.startsWith('nb-')) {
         setTimeout(() => {
           _setChatMessages(prev => {
             const list = prev[selectedNeighbor.id] || [];
             const idx = list.findIndex(m => m.id === msgId);
             if (idx > -1) {
               const copy = [...list];
-              copy[idx] = { ...newMsg, status: 'read' as const };
+              copy[idx] = { ...sentMsg, status: 'delivered' as const };
               return { ...prev, [selectedNeighbor.id]: copy };
             }
             return prev;
           });
 
-          const promptText = resolvedType === 'text' ? inputContent : `[Snap photo sent]`;
-          triggerSimulatedResponse(selectedNeighbor.id, promptText, customImage);
-        }, 650);
-      }, 400);
-    }
+          setTimeout(() => {
+            _setChatMessages(prev => {
+              const list = prev[selectedNeighbor.id] || [];
+              const idx = list.findIndex(m => m.id === msgId);
+              if (idx > -1) {
+                const copy = [...list];
+                copy[idx] = { ...sentMsg, status: 'read' as const };
+                return { ...prev, [selectedNeighbor.id]: copy };
+              }
+              return prev;
+            });
+
+            const promptText = resolvedType === 'text' ? inputContent : `[Snap photo sent]`;
+            triggerSimulatedResponse(selectedNeighbor.id, promptText, customImage);
+
+          }, 650);
+        }, 400);
+      }
+    }, 150);
   };
 
   const handleReaction = async (msg: DirectMessage, emoji: string) => {
@@ -5583,8 +5570,6 @@ export function useNearbyController() {
         id: msgId,
         senderId: currentUser.uid,
         receiverId: neighborId,
-        participants: [currentUser.uid, neighborId].sort(),
-        chatThreadId: [currentUser.uid, neighborId].sort().join('_'),
         type: 'text',
         text: messageText,
         timestamp: new Date().toISOString(),
@@ -5631,24 +5616,56 @@ export function useNearbyController() {
   };
 
   const handleReportNeighbor = async (neighborId: string, reason: string) => {
-    if (!currentUser || !neighborId || neighborId === currentUser.uid) return;
+    if (!currentUser) return;
     try {
-      const reportId = `report-${currentUser.uid}-${neighborId}-${Date.now()}`;
-      await setDoc(doc(db, 'reports', reportId), {
-        reportId,
-        reporterId: currentUser.uid,
-        reportedUserId: neighborId,
-        reason: reason.trim().slice(0, 1000),
-        createdAt: new Date().toISOString()
-      });
-      setAudioFeedback("Report submitted. Thank you for helping keep Nearby safe.");
-      setTimeout(() => setAudioFeedback(""), 3000);
+      const neighborDocRef = doc(db, 'users', neighborId);
+      const neighborSnap = await getDoc(neighborDocRef);
+      if (neighborSnap.exists()) {
+        const u = neighborSnap.data();
+        const currentReports = u.reportsCount !== undefined ? u.reportsCount : 0;
+        const newReports = currentReports + 1;
+        
+        await updateDoc(neighborDocRef, {
+          reportsCount: newReports
+        });
+        
+        setNeighbors(prev => prev.map(n => {
+          if (n.id === neighborId) {
+            return {
+              ...n,
+              reportsCount: newReports
+            };
+          }
+          return n;
+        }));
+        
+        if (viewingNeighborProfile && viewingNeighborProfile.id === neighborId) {
+          setViewingNeighborProfile(prev => prev ? {
+            ...prev,
+            reportsCount: newReports
+          } : null);
+        }
+        
+        triggerBeep(220, 0.2);
+        setAudioFeedback(`Report submitted. Reason: ${reason}`);
+        setTimeout(() => setAudioFeedback(""), 3000);
+        
+        if (newReports >= 10) {
+          await updateDoc(neighborDocRef, {
+            banned: true
+          });
+          setNeighbors(prev => prev.filter(n => n.id !== neighborId));
+          setViewingNeighborProfile(null);
+          setAudioFeedback("User has been banned due to multiple complaints.");
+          setTimeout(() => setAudioFeedback(""), 4000);
+        }
+      }
     } catch (err) {
-      console.error("Failed to submit neighbor report:", err);
-      setAudioFeedback("We couldn't submit the report right now. Please try again.");
-      setTimeout(() => setAudioFeedback(""), 3000);
+      console.error("Failed to report user: ", err);
     }
   };
+
+  // 2. Friend addition limit (free)
   const handleAddNewFriend = (neighborId: string) => {
     actuallyAddFriend(neighborId);
   };
@@ -6748,6 +6765,7 @@ export function useNearbyController() {
     setSearchQuery,
     usingGoogleMaps,
     setUsingGoogleMaps,
+    hasValidGoogleMapsKey,
     userNoteText,
     setUserNoteText,
     showNoteModal,

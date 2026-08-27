@@ -1,48 +1,41 @@
-import { db, auth, handleFirestoreError, OperationType } from '../../../firebase';
+import { db } from '../../../services/firebase';
 import { Meetup, MeetupRating } from '../../../types';
 import { collection, doc, setDoc, query, where, onSnapshot } from 'firebase/firestore';
 
 export const meetupService = {
   scheduleMeetup: async (meetup: Meetup) => {
-    if (!auth.currentUser) throw new Error('You must be signed in to schedule a meetup.');
-    try {
-      await setDoc(doc(db, 'meetups', meetup.meetupId), meetup, { merge: true });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `meetups/${meetup.meetupId}`);
-      throw err;
-    }
+    const meetupRef = doc(db, 'meetups', meetup.meetupId);
+    await setDoc(meetupRef, meetup, { merge: true });
   },
 
   rateMeetup: async (rating: MeetupRating) => {
-    if (!auth.currentUser) throw new Error('You must be signed in to rate a meetup.');
-    try {
-      await setDoc(doc(db, 'meetupRatings', rating.ratingId), rating, { merge: true });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `meetupRatings/${rating.ratingId}`);
-      throw err;
-    }
+    const ratingRef = doc(db, 'meetupRatings', rating.ratingId);
+    await setDoc(ratingRef, rating, { merge: true });
   },
 
-  subscribeToUserMeetups: (userId: string, callback: (meetups: Meetup[]) => void, onError?: (error: Error) => void) => {
-    if (!auth.currentUser || auth.currentUser.uid !== userId) return () => undefined;
+  subscribeToUserMeetups: (userId: string, callback: (meetups: Meetup[]) => void) => {
+    const qHost = query(collection(db, 'meetups'), where('hostUID', '==', userId));
+    const qParticipant = query(collection(db, 'meetups'), where('participantUID', '==', userId));
+
     const meetupsMap = new Map<string, Meetup>();
-    const emit = () => callback(Array.from(meetupsMap.values()));
-    const handleError = (error: Error) => {
-      handleFirestoreError(error, OperationType.LIST, 'meetups');
-      onError?.(error);
+    
+    const unsubHost = onSnapshot(qHost, (snap) => {
+      snap.forEach((docSnap) => {
+        meetupsMap.set(docSnap.id, docSnap.data() as Meetup);
+      });
+      callback(Array.from(meetupsMap.values()));
+    });
+
+    const unsubParticipant = onSnapshot(qParticipant, (snap) => {
+      snap.forEach((docSnap) => {
+        meetupsMap.set(docSnap.id, docSnap.data() as Meetup);
+      });
+      callback(Array.from(meetupsMap.values()));
+    });
+
+    return () => {
+      unsubHost();
+      unsubParticipant();
     };
-
-    const unsubHost = onSnapshot(
-      query(collection(db, 'meetups'), where('hostUID', '==', userId)),
-      (snap) => { snap.forEach((d) => meetupsMap.set(d.id, d.data() as Meetup)); emit(); },
-      handleError,
-    );
-    const unsubParticipant = onSnapshot(
-      query(collection(db, 'meetups'), where('participantUID', '==', userId)),
-      (snap) => { snap.forEach((d) => meetupsMap.set(d.id, d.data() as Meetup)); emit(); },
-      handleError,
-    );
-
-    return () => { unsubHost(); unsubParticipant(); };
-  },
+  }
 };

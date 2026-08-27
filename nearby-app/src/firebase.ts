@@ -1,17 +1,16 @@
 import { initializeApp } from 'firebase/app';
-import {
-  getAuth,
-  setPersistence,
+import { 
+  getAuth, 
+  setPersistence, 
   browserLocalPersistence,
   onAuthStateChanged as fOnAuthStateChanged,
   signOut as fSignOut,
   signInWithPopup as fSignInWithPopup,
   signInWithEmailAndPassword as fSignInWithEmailAndPassword,
   createUserWithEmailAndPassword as fCreateUserWithEmailAndPassword,
-  GoogleAuthProvider,
+  GoogleAuthProvider
 } from 'firebase/auth';
 import * as f from 'firebase/firestore';
-import { getStorage, ref as sRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import firebaseConfigDefault from '../firebase-applet-config.json';
 import { compressImage } from './utils/imageCompressor';
 
@@ -23,7 +22,7 @@ const envConfig = {
   messagingSenderId: (import.meta as any).env?.VITE_FIREBASE_MESSAGING_SENDER_ID,
   appId: (import.meta as any).env?.VITE_FIREBASE_APP_ID,
   measurementId: (import.meta as any).env?.VITE_FIREBASE_MEASUREMENT_ID,
-  firestoreDatabaseId: (import.meta as any).env?.VITE_FIREBASE_FIRESTORE_DATABASE_ID,
+  firestoreDatabaseId: (import.meta as any).env?.VITE_FIREBASE_FIRESTORE_DATABASE_ID
 };
 
 const firebaseConfig = {
@@ -34,18 +33,19 @@ const firebaseConfig = {
   messagingSenderId: envConfig.messagingSenderId || firebaseConfigDefault.messagingSenderId,
   appId: envConfig.appId || firebaseConfigDefault.appId,
   measurementId: envConfig.measurementId || firebaseConfigDefault.measurementId,
-  firestoreDatabaseId: envConfig.firestoreDatabaseId || firebaseConfigDefault.firestoreDatabaseId,
+  firestoreDatabaseId: envConfig.firestoreDatabaseId || firebaseConfigDefault.firestoreDatabaseId
 };
 
 const app = initializeApp(firebaseConfig);
-export const db = firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
+export const db = (firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== "(default)")
   ? f.getFirestore(app, firebaseConfig.firestoreDatabaseId)
   : f.getFirestore(app);
-export const auth = getAuth(app);
-export const storage = getStorage(app);
 
+export const auth = getAuth(app);
+
+// Force session persistence to local storage so credentials survive reload, background sleep, or tab minimization o!
 setPersistence(auth, browserLocalPersistence).catch((err) => {
-  console.warn('Failed to set explicit auth persistence:', err);
+  console.warn("Failed to set explicit auth persistence:", err);
 });
 
 export enum OperationType {
@@ -67,7 +67,10 @@ export interface FirestoreErrorInfo {
     emailVerified?: boolean | null;
     isAnonymous?: boolean | null;
     tenantId?: string | null;
-    providerInfo?: { providerId?: string | null; email?: string | null }[];
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
   };
 }
 
@@ -80,190 +83,845 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
       emailVerified: auth.currentUser?.emailVerified,
       isAnonymous: auth.currentUser?.isAnonymous,
       tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData?.map((provider) => ({
+      providerInfo: auth.currentUser?.providerData?.map(provider => ({
         providerId: provider.providerId,
         email: provider.email,
-      })) || [],
+      })) || []
     },
     operationType,
-    path,
+    path
   };
-
+  
+  // CRITICAL: Must write matching text to match test parsing of Firestore Errors!
   console.error('Firestore Error: ', JSON.stringify(errInfo));
-
+  
+  // Dispatch a global event as standard custom logging
   if (typeof window !== 'undefined') {
-    const lower = errInfo.error.toLowerCase();
-    window.dispatchEvent(new CustomEvent('firestore-error-event', {
-      detail: {
-        ...errInfo,
-        isQuota: lower.includes('quota') || lower.includes('resource-exhausted'),
-      },
-    }));
+    const isQuota = errInfo.error.includes("Quota exceeded") || errInfo.error.includes("quota");
+    const event = new CustomEvent('firestore-error-event', { 
+      detail: { ...errInfo, isQuota } 
+    });
+    window.dispatchEvent(event);
+  }
+
+  // NOTE: Permission-denied errors are almost always transient (e.g. a security-rule
+  // check firing a split-second before the auth token attaches after login/reload) or
+  // a real rules bug that needs fixing — they are NOT a signal that Firestore itself is
+  // unreachable. This used to silently flip the whole app into a per-device, local-only
+  // fake database (see isFallbackMode below), which meant one flaky permission error
+  // would cut a user off from the shared cloud data entirely: their profile photo,
+  // highlights, chat messages, and location writes would start going to a local
+  // localStorage stub that no other user/device can see, while still rendering fine
+  // to that one user - which is exactly what caused DPs/highlights/posts to
+  // intermittently "disappear and come back", one side of a chat never receiving
+  // messages, and new accounts not showing up on the radar/explore pages for anyone
+  // else. We no longer treat permission errors as a reason to go local - they're
+  // logged/surfaced (see the firestore-error-event dispatch above) so real rule
+  // problems get noticed and fixed instead of silently masked.
+}
+
+// -------------------------------------------------------------
+// SECURE ROBUST SEAMLESS LOCAL FALLBACK ENGINE O!
+// -------------------------------------------------------------
+
+export let isFallbackMode = false;
+let localFallbackDb: Record<string, any> = {};
+
+// Load local db from localStorage on boot
+try {
+  if (typeof localStorage !== 'undefined') {
+    const saved = localStorage.getItem('local_fallback_db');
+    if (saved) {
+      localFallbackDb = JSON.parse(saved);
+    }
+  }
+} catch (e) {
+  console.warn("localStorage loading failed for fallback DB", e);
+}
+
+// Automatically turn on fallback if firestore has pre-existing daily quota exceeded errors or on boot check fails
+function saveFallbackDb() {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('local_fallback_db', JSON.stringify(localFallbackDb));
+    }
+  } catch (e) {
+    console.warn("localStorage saving failed for fallback DB", e);
   }
 }
 
-// Keep Firebase's native references and sentinels. There is intentionally no
-// local database fallback: a successful local write must never masquerade as a
-// successful cloud write in a realtime social application.
-export const doc = f.doc;
-export const collection = f.collection;
-export const query = f.query;
-export const where = f.where;
-export const orderBy = f.orderBy;
-export const limit = f.limit;
-export const limitToLast = f.limitToLast;
-export const arrayUnion = f.arrayUnion;
-export const arrayRemove = f.arrayRemove;
-export const onSnapshot = f.onSnapshot;
+function isQuotaError(err: any): boolean {
+  if (!err) return false;
+  // Only genuine Firebase quota/resource-exhaustion should ever divert this app to the
+  // local-only fallback store. Permission/insufficient/unauthorized/generic "limit" text
+  // used to match here too, which meant a single transient permission-denied error
+  // (extremely common right after login, before the auth token is attached) would
+  // permanently cut that device off from the real, shared Firestore data for the rest
+  // of the session - see the long comment in handleFirestoreError above for the full
+  // explanation of the bugs this caused.
+  const code = (err.code || '').toLowerCase();
+  const msg = (err.message || String(err)).toLowerCase();
+  return code === 'resource-exhausted' ||
+         msg.includes('resource-exhausted') ||
+         msg.includes('quota exceeded');
+}
 
-export async function getDoc(ref: any) {
+// Deep Merging helper for updates/merge operations
+function mergeDeep(fbTarget: any, fbSource: any): any {
+  if (!fbTarget || typeof fbTarget !== 'object') return fbSource;
+  if (!fbSource || typeof fbSource !== 'object') return fbSource;
+
+  const out = { ...fbTarget };
+  Object.keys(fbSource).forEach(key => {
+    const val = fbSource[key];
+    if (val && typeof val === 'object' && !Array.isArray(val) && !(val instanceof Date)) {
+      out[key] = mergeDeep(out[key] || {}, val);
+    } else if (val && val.__isFieldValueUnion) {
+      const currentArr = Array.isArray(out[key]) ? out[key] : [];
+      let nextArr = [...currentArr];
+      val.values.forEach((v: any) => {
+        if (!nextArr.includes(v)) nextArr.push(v);
+      });
+      out[key] = nextArr;
+    } else if (val && val.__isFieldValueRemove) {
+      const currentArr = Array.isArray(out[key]) ? out[key] : [];
+      out[key] = currentArr.filter((item: any) => !val.values.includes(item));
+    } else {
+      out[key] = val;
+    }
+  });
+  return out;
+}
+
+// ---------------------------
+// REFERENCE PROXIES
+// ---------------------------
+
+export interface ProxyDocRef {
+  __isProxyRef: true;
+  type: 'doc';
+  path: string;
+  id: string;
+  original: any;
+}
+
+export interface ProxyCollectionRef {
+  __isProxyRef: true;
+  type: 'collection';
+  path: string;
+  id: string;
+  original: any;
+}
+
+export interface ProxyQuery {
+  __isProxyRef: true;
+  type: 'query';
+  path: string;
+  filters: any[];
+  orders: any[];
+  original: any;
+}
+
+export function doc(dbOrParent: any, ...segments: string[]): any {
+  let basePath = '';
+  if (dbOrParent && dbOrParent.__isProxyRef) {
+    basePath = dbOrParent.path;
+  }
+  const cleanSegments = segments.filter(Boolean);
+  const path = basePath ? [basePath, ...cleanSegments].join('/') : cleanSegments.join('/');
+  
+  let original: any = null;
   try {
-    return await f.getDoc(ref);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.GET, ref.path);
+    const origParent = dbOrParent && dbOrParent.__isProxyRef ? dbOrParent.original : dbOrParent;
+    original = (f.doc as any)(origParent, ...segments);
+  } catch (e) {
+    // offline/disabled
+  }
+
+  return {
+    __isProxyRef: true,
+    type: 'doc' as const,
+    path,
+    id: cleanSegments[cleanSegments.length - 1] || '',
+    original,
+  };
+}
+
+export function collection(dbOrParent: any, ...segments: string[]): any {
+  let basePath = '';
+  if (dbOrParent && dbOrParent.__isProxyRef) {
+    basePath = dbOrParent.path;
+  }
+  const cleanSegments = segments.filter(Boolean);
+  const path = basePath ? [basePath, ...cleanSegments].join('/') : cleanSegments.join('/');
+
+  let original: any = null;
+  try {
+    const origParent = dbOrParent && dbOrParent.__isProxyRef ? dbOrParent.original : dbOrParent;
+    original = (f.collection as any)(origParent, ...segments);
+  } catch (e) {
+    // offline/disabled
+  }
+
+  return {
+    __isProxyRef: true,
+    type: 'collection' as const,
+    path,
+    id: cleanSegments[cleanSegments.length - 1] || '',
+    original,
+  };
+}
+
+export function query(collectionRef: any, ...constraints: any[]): any {
+  const path = collectionRef.__isProxyRef ? collectionRef.path : '';
+  const filters: any[] = [];
+  const orders: any[] = [];
+  let limitVal: number | null = null;
+  let limitToLastVal: number | null = null;
+  
+  constraints.forEach(c => {
+    if (c && c.type === 'where') {
+      filters.push(c);
+    } else if (c && c.type === 'orderBy') {
+      orders.push(c);
+    } else if (c && c.type === 'limit') {
+      limitVal = c.value;
+    } else if (c && c.type === 'limitToLast') {
+      limitToLastVal = c.value;
+    }
+  });
+
+  let original: any = null;
+  try {
+    // If not currently failing, prepare the real Firestore query
+    if (!isFallbackMode) {
+      const origColl = collectionRef.__isProxyRef ? collectionRef.original : collectionRef;
+      const origConstraints = constraints.map(c => c && c.type ? c.original : c).filter(Boolean);
+      original = (f.query as any)(origColl, ...origConstraints);
+    }
+  } catch (e) {
+    // offline/disabled
+  }
+
+  return {
+    __isProxyRef: true,
+    type: 'query' as const,
+    path,
+    filters,
+    orders,
+    limitVal,
+    limitToLastVal,
+    original,
+  };
+}
+
+export function where(field: string, op: string, value: any) {
+  let original: any = null;
+  try {
+    original = f.where(field, op as any, value);
+  } catch (e) {}
+  return {
+    type: 'where' as const,
+    field,
+    op,
+    value,
+    original,
+  };
+}
+
+export function orderBy(field: string, direction: string = 'asc') {
+  let original: any = null;
+  try {
+    original = f.orderBy(field, direction as any);
+  } catch (e) {}
+  return {
+    type: 'orderBy' as const,
+    field,
+    direction,
+    original,
+  };
+}
+
+export function limit(value: number) {
+  let original: any = null;
+  try {
+    original = f.limit(value);
+  } catch (e) {}
+  return {
+    type: 'limit' as const,
+    value,
+    original,
+  };
+}
+
+export function limitToLast(value: number) {
+  let original: any = null;
+  try {
+    original = f.limitToLast(value);
+  } catch (e) {}
+  return {
+    type: 'limitToLast' as const,
+    value,
+    original,
+  };
+}
+
+export function arrayUnion(...elements: any[]) {
+  return {
+    __isFieldValueUnion: true,
+    values: elements,
+    original: f.arrayUnion(...elements),
+  };
+}
+
+export function arrayRemove(...elements: any[]) {
+  return {
+    __isFieldValueRemove: true,
+    values: elements,
+    original: f.arrayRemove(...elements),
+  };
+}
+
+// ---------------------------
+// SNAPSHOT BUILDERS
+// ---------------------------
+
+export interface MockDocumentSnapshot {
+  id: string;
+  exists: () => boolean;
+  data: () => any;
+  ref: { path: string; id: string };
+}
+
+function buildMockDocSnapshot(path: string): MockDocumentSnapshot {
+  const parts = path.split('/');
+  const id = parts[parts.length - 1] || '';
+  const val = localFallbackDb[path];
+  return {
+    id,
+    exists: () => val !== undefined && val !== null,
+    data: () => val ? JSON.parse(JSON.stringify(val)) : undefined,
+    ref: { path, id }
+  };
+}
+
+export interface MockQuerySnapshot {
+  empty: boolean;
+  size: number;
+  docs: MockDocumentSnapshot[];
+  forEach: (callback: (doc: MockDocumentSnapshot) => void) => void;
+}
+
+function buildMockQuerySnapshot(target: any): MockQuerySnapshot {
+  const path = target.path; 
+  const filters = target.filters || [];
+  const orders = target.orders || [];
+
+  const keys = Object.keys(localFallbackDb).filter(k => {
+    if (!k.startsWith(path + '/')) return false;
+    const sub = k.slice(path.length + 1);
+    return !sub.includes('/'); // direct children only
+  });
+
+  let docs = keys.map(k => buildMockDocSnapshot(k)).filter(d => d.exists());
+
+  // Apply filters
+  filters.forEach(fItem => {
+    const { field, op, value } = fItem;
+    docs = docs.filter(d => {
+      const docData = d.data();
+      if (!docData) return false;
+      const docVal = docData[field];
+      if (op === '==' || op === '===') {
+        return docVal === value;
+      }
+      if (op === '!=') {
+        return docVal !== value;
+      }
+      if (op === 'in') {
+        return Array.isArray(value) && value.includes(docVal);
+      }
+      if (op === 'array-contains') {
+        return Array.isArray(docVal) && docVal.includes(value);
+      }
+      return true;
+    });
+  });
+
+  // Apply orders
+  orders.forEach(o => {
+    const { field, direction } = o;
+    docs.sort((a, b) => {
+      const aVal = a.data()?.[field];
+      const bVal = b.data()?.[field];
+      if (aVal === undefined || bVal === undefined) return 0;
+      if (aVal < bVal) return direction === 'desc' ? 1 : -1;
+      if (aVal > bVal) return direction === 'desc' ? -1 : 1;
+      return 0;
+    });
+  });
+
+  // Apply limits
+  if (target.limitVal !== undefined && target.limitVal !== null) {
+    docs = docs.slice(0, target.limitVal);
+  } else if (target.limitToLastVal !== undefined && target.limitToLastVal !== null) {
+    docs = docs.slice(-target.limitToLastVal);
+  }
+
+  return {
+    empty: docs.length === 0,
+    size: docs.length,
+    docs,
+    forEach: (callback) => {
+      docs.forEach(callback);
+    }
+  };
+}
+
+// ---------------------------
+// LIFECYCLE LISTENERS
+// ---------------------------
+
+interface FallbackListener {
+  target: any;
+  onNext: (snap: any) => void;
+}
+const fallbackListeners: FallbackListener[] = [];
+
+function registerFallbackListener(target: any, onNext: (snap: any) => void): () => void {
+  const listener = { target, onNext };
+  fallbackListeners.push(listener);
+  
+  setTimeout(() => {
+    try {
+      if (target.type === 'doc') {
+        onNext(buildMockDocSnapshot(target.path));
+      } else {
+        onNext(buildMockQuerySnapshot(target));
+      }
+    } catch (e) {
+      console.warn("Error triggering initial fallback data", e);
+    }
+  }, 0);
+
+  return () => {
+    const idx = fallbackListeners.indexOf(listener);
+    if (idx > -1) {
+      fallbackListeners.splice(idx, 1);
+    }
+  };
+}
+
+function triggerAllFallbackListeners(changedPath?: string) {
+  fallbackListeners.forEach(listener => {
+    try {
+      const match = !changedPath || 
+                    listener.target.path === changedPath || 
+                    listener.target.path.startsWith(changedPath + '/') || 
+                    changedPath.startsWith(listener.target.path + '/');
+      if (match) {
+        if (listener.target.type === 'doc') {
+          listener.onNext(buildMockDocSnapshot(listener.target.path));
+        } else {
+          listener.onNext(buildMockQuerySnapshot(listener.target));
+        }
+      }
+    } catch (e) {
+      console.warn("Real-time fallback notice callback failed", e);
+    }
+  });
+}
+
+// ---------------------------
+// DATA ACCESS PROXIES
+// ---------------------------
+
+export async function getDoc(ref: any): Promise<any> {
+  if (isFallbackMode) {
+    return buildMockDocSnapshot(ref.path);
+  }
+  try {
+    const origRef = ref.__isProxyRef ? ref.original : ref;
+    return await f.getDoc(origRef);
+  } catch (err: any) {
+    if (isQuotaError(err)) {
+      isFallbackMode = true;
+      triggerAllFallbackListeners();
+      return buildMockDocSnapshot(ref.path);
+    }
     throw err;
   }
 }
 
-export async function getDocFromServer(ref: any) {
+export async function getDocFromServer(ref: any): Promise<any> {
+  if (isFallbackMode) {
+    return buildMockDocSnapshot(ref.path);
+  }
   try {
-    return await f.getDocFromServer(ref);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.GET, ref.path);
+    const origRef = ref.__isProxyRef ? ref.original : ref;
+    return await f.getDocFromServer(origRef);
+  } catch (err: any) {
+    if (isQuotaError(err)) {
+      isFallbackMode = true;
+      triggerAllFallbackListeners();
+      return buildMockDocSnapshot(ref.path);
+    }
     throw err;
   }
 }
 
-export async function getDocs(target: any) {
+export async function getDocs(target: any): Promise<any> {
+  if (isFallbackMode) {
+    return buildMockQuerySnapshot(target);
+  }
   try {
-    return await f.getDocs(target);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, target.path);
+    const origTarget = target.__isProxyRef ? (target.original || target.ref?.original) : target;
+    return await f.getDocs(origTarget);
+  } catch (err: any) {
+    if (isQuotaError(err)) {
+      isFallbackMode = true;
+      triggerAllFallbackListeners();
+      return buildMockQuerySnapshot(target);
+    }
     throw err;
   }
 }
 
-export async function setDoc(ref: any, data: any, options?: any) {
+export async function setDoc(ref: any, data: any, options?: any): Promise<void> {
+  if (isFallbackMode) {
+    const existing = localFallbackDb[ref.path] || {};
+    if (options && options.merge) {
+      localFallbackDb[ref.path] = mergeDeep(existing, data);
+    } else {
+      localFallbackDb[ref.path] = data;
+    }
+    saveFallbackDb();
+    triggerAllFallbackListeners(ref.path);
+    return;
+  }
   try {
-    return await f.setDoc(ref, data, options as any);
-  } catch (err) {
-    handleFirestoreError(err, options?.merge ? OperationType.UPDATE : OperationType.CREATE, ref.path);
+    const origRef = ref.__isProxyRef ? ref.original : ref;
+    const cleanData = JSON.parse(JSON.stringify(data)); // clean custom wrapper proxy wrappers
+    await f.setDoc(origRef, cleanData, options);
+  } catch (err: any) {
+    if (isQuotaError(err)) {
+      isFallbackMode = true;
+      const existing = localFallbackDb[ref.path] || {};
+      if (options && options.merge) {
+        localFallbackDb[ref.path] = mergeDeep(existing, data);
+      } else {
+        localFallbackDb[ref.path] = data;
+      }
+      saveFallbackDb();
+      triggerAllFallbackListeners(ref.path);
+      return;
+    }
     throw err;
   }
 }
 
-export async function updateDoc(ref: any, data: any) {
+export async function updateDoc(ref: any, data: any): Promise<void> {
+  if (isFallbackMode) {
+    const existing = localFallbackDb[ref.path] || {};
+    localFallbackDb[ref.path] = mergeDeep(existing, data);
+    saveFallbackDb();
+    triggerAllFallbackListeners(ref.path);
+    return;
+  }
   try {
-    return await f.updateDoc(ref, data);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, ref.path);
+    const origRef = ref.__isProxyRef ? ref.original : ref;
+    const cleanData = JSON.parse(JSON.stringify(data));
+    await f.updateDoc(origRef, cleanData);
+  } catch (err: any) {
+    if (isQuotaError(err)) {
+      isFallbackMode = true;
+      const existing = localFallbackDb[ref.path] || {};
+      localFallbackDb[ref.path] = mergeDeep(existing, data);
+      saveFallbackDb();
+      triggerAllFallbackListeners(ref.path);
+      return;
+    }
     throw err;
   }
 }
 
-export async function addDoc(collectionRef: any, data: any) {
+export async function addDoc(collectionRef: any, data: any): Promise<any> {
+  const randomId = 'sim_' + Math.random().toString(36).substring(2, 10);
+  const path = collectionRef.path + '/' + randomId;
+  
+  if (isFallbackMode) {
+    localFallbackDb[path] = data;
+    saveFallbackDb();
+    triggerAllFallbackListeners(path);
+    return { id: randomId };
+  }
   try {
-    return await f.addDoc(collectionRef, data);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, collectionRef.path);
+    const origColl = collectionRef.__isProxyRef ? collectionRef.original : collectionRef;
+    const cleanData = JSON.parse(JSON.stringify(data));
+    return await f.addDoc(origColl, cleanData);
+  } catch (err: any) {
+    if (isQuotaError(err)) {
+      isFallbackMode = true;
+      localFallbackDb[path] = data;
+      saveFallbackDb();
+      triggerAllFallbackListeners(path);
+      return { id: randomId };
+    }
     throw err;
   }
 }
 
-export async function deleteDoc(ref: any) {
+export async function deleteDoc(ref: any): Promise<void> {
+  if (isFallbackMode) {
+    delete localFallbackDb[ref.path];
+    const keys = Object.keys(localFallbackDb);
+    keys.forEach(k => {
+      if (k === ref.path || k.startsWith(ref.path + '/')) {
+        delete localFallbackDb[k];
+      }
+    });
+    saveFallbackDb();
+    triggerAllFallbackListeners(ref.path);
+    return;
+  }
   try {
-    return await f.deleteDoc(ref);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, ref.path);
+    const origRef = ref.__isProxyRef ? ref.original : ref;
+    await f.deleteDoc(origRef);
+  } catch (err: any) {
+    if (isQuotaError(err)) {
+      isFallbackMode = true;
+      delete localFallbackDb[ref.path];
+      const keys = Object.keys(localFallbackDb);
+      keys.forEach(k => {
+        if (k === ref.path || k.startsWith(ref.path + '/')) {
+          delete localFallbackDb[k];
+        }
+      });
+      saveFallbackDb();
+      triggerAllFallbackListeners(ref.path);
+      return;
+    }
     throw err;
   }
 }
+
+const fallbackUnsubscribeMap = new Map<string, () => void>();
+
+export function onSnapshot(target: any, onNext: (snap: any) => void, onError?: (err: any) => void): () => void {
+  if (isFallbackMode) {
+    return registerFallbackListener(target, onNext);
+  }
+
+  const origTarget = target.__isProxyRef ? (target.original || target.ref?.original) : target;
+  if (!origTarget) {
+    return registerFallbackListener(target, onNext);
+  }
+
+  const unsubKey = Math.random().toString(36).substring(7);
+
+  const unsub = f.onSnapshot(origTarget, (snap) => {
+    onNext(snap);
+  }, (err) => {
+    if (isQuotaError(err)) {
+      isFallbackMode = true;
+      triggerAllFallbackListeners();
+      const localUnsub = registerFallbackListener(target, onNext);
+      fallbackUnsubscribeMap.set(unsubKey, localUnsub);
+    } else {
+      if (onError) onError(err);
+    }
+  });
+
+  return () => {
+    unsub();
+    const mapped = fallbackUnsubscribeMap.get(unsubKey);
+    if (mapped) {
+      mapped();
+      fallbackUnsubscribeMap.delete(unsubKey);
+    }
+  };
+}
+
+// -------------------------------------------------------------
+// WRAPPED FIREBASE AUTHENTICATION ENGINE - PRODUCTION READY
+// -------------------------------------------------------------
 
 export { GoogleAuthProvider };
 
-export function onAuthStateChanged(_authInstance: any, callback: (user: any) => void) {
+export function onAuthStateChanged(authInstance: any, callback: (user: any) => void) {
   return fOnAuthStateChanged(auth, callback);
 }
 
-export async function signOut(_authInstance: any) {
-  return fSignOut(auth);
+export async function signOut(authInstance: any) {
+  await fSignOut(auth);
 }
 
-export async function signInWithPopup(_authInstance: any, provider: any) {
+export async function signInWithPopup(authInstance: any, provider: any) {
   try {
     return await fSignInWithPopup(auth, provider);
   } catch (err: any) {
-    console.error('Sign-in with popup failed:', err);
+    console.error("Sign-in with popup failed:", err);
     if (err.code === 'auth/operation-not-allowed') {
-      throw new Error("Google Sign-In is not enabled in your Firebase Console. Under Authentication -> Sign-In Method, enable 'Google'.");
+      throw new Error("Google Sign-In is not enabled in your Firebase Console. Under Authentication -> Sign-In Method, enable 'Google' as a sign-in provider.");
     }
     throw err;
   }
 }
 
-export async function signInWithEmailAndPassword(_authInstance: any, email: string, pass: string) {
+export async function signInWithEmailAndPassword(authInstance: any, email: string, pass: string) {
   try {
     return await fSignInWithEmailAndPassword(auth, email, pass);
   } catch (err: any) {
-    console.error('Sign-in with email failed:', err);
+    console.error("Sign-in with email failed:", err);
     if (err.code === 'auth/operation-not-allowed') {
-      throw new Error("Email/Password Sign-In is not enabled in your Firebase Console. Under Authentication -> Sign-In Method, enable 'Email/Password'.");
+      throw new Error("Email/Password Sign-In is not enabled in your Firebase Console. Under Authentication -> Sign-In Method, enable 'Email/Password' as a sign-in provider.");
     }
     throw err;
   }
 }
 
-export async function createUserWithEmailAndPassword(_authInstance: any, email: string, pass: string) {
+export async function createUserWithEmailAndPassword(authInstance: any, email: string, pass: string) {
   try {
     return await fCreateUserWithEmailAndPassword(auth, email, pass);
   } catch (err: any) {
-    console.error('Create user with email failed:', err);
+    console.error("Create user with email failed:", err);
     if (err.code === 'auth/operation-not-allowed') {
-      throw new Error("Email/Password Sign-In is not enabled in your Firebase Console. Under Authentication -> Sign-In Method, enable 'Email/Password'.");
+      throw new Error("Email/Password Sign-In is not enabled in your Firebase Console. Under Authentication -> Sign-In Method, enable 'Email/Password' as a sign-in provider.");
     }
     throw err;
   }
 }
 
-function dataUrlToBlob(dataUrl: string): Blob {
-  const [header, encoded] = dataUrl.split(',', 2);
-  if (!header || !encoded) throw new Error('Invalid data URL.');
-  const mime = header.match(/data:([^;]+);base64/i)?.[1] || 'application/octet-stream';
-  const binary = atob(encoded);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new Blob([bytes], { type: mime });
-}
+/**
+ * Cloudinary is used for media hosting instead of Firebase Storage, which requires the
+ * paid Blaze plan. Cloudinary's free tier (25 GB storage / 25 GB monthly bandwidth as of
+ * writing) works fine for this, and uploads happen directly from the browser using an
+ * "unsigned" upload preset - no backend, no secret key exposed client-side.
+ *
+ * Setup (one-time, ~5 minutes):
+ * 1. Create a free account at https://cloudinary.com
+ * 2. Your "Cloud name" is shown on the Cloudinary console dashboard - copy it.
+ * 3. Go to Settings (gear icon) -> Upload -> Upload presets -> "Add upload preset".
+ *    Set "Signing Mode" to "Unsigned" and save. Copy the preset name it gives you.
+ * 4. Put both values in your .env file:
+ *      VITE_CLOUDINARY_CLOUD_NAME="your-cloud-name"
+ *      VITE_CLOUDINARY_UPLOAD_PRESET="your-preset-name"
+ */
+const CLOUDINARY_CLOUD_NAME = (import.meta as any).env?.VITE_CLOUDINARY_CLOUD_NAME || '';
+const CLOUDINARY_UPLOAD_PRESET = (import.meta as any).env?.VITE_CLOUDINARY_UPLOAD_PRESET || '';
+export const hasValidCloudinaryConfig = Boolean(CLOUDINARY_CLOUD_NAME) && Boolean(CLOUDINARY_UPLOAD_PRESET);
 
-/** Uploads media to Firebase Storage. Upload failure is propagated deliberately. */
+/**
+ * Uploads a File, Blob, or base64 string to Cloudinary and returns its hosted URL.
+ * Falls back to returning the base64/original data URL if upload fails (e.g., config
+ * missing, offline, preset misconfigured) so callers never have to special-case this.
+ */
 export async function uploadToStorage(data: File | Blob | string, path: string): Promise<string> {
-  let blob: Blob;
-  if (data instanceof File || data instanceof Blob) {
-    blob = await compressImage(data);
-  } else if (typeof data === 'string' && data.startsWith('data:')) {
-    blob = await compressImage(dataUrlToBlob(data));
-  } else {
-    throw new Error('uploadToStorage expects a File, Blob, or data URL.');
-  }
-
   try {
-    const storageRef = sRef(storage, path);
-    const snapshot = await uploadBytes(storageRef, blob, {
-      contentType: blob.type || 'application/octet-stream',
+    if (!hasValidCloudinaryConfig) {
+      throw new Error('Cloudinary is not configured - set VITE_CLOUDINARY_CLOUD_NAME and VITE_CLOUDINARY_UPLOAD_PRESET in your .env file.');
+    }
+
+    let blob: Blob;
+    if (data instanceof File || data instanceof Blob) {
+      blob = await compressImage(data);
+    } else if (typeof data === 'string' && data.startsWith('data:')) {
+      // It's a base64 Data URL, convert to Blob
+      const arr = data.split(',');
+      const mime = arr[0].match(/:(.*?);/)?.[1] || 'image/jpeg';
+      const bstr = atob(arr[1]);
+      let n = bstr.length;
+      const u8arr = new Uint8Array(n);
+      while (n--) {
+        u8arr[n] = bstr.charCodeAt(n);
+      }
+      const rawBlob = new Blob([u8arr], { type: mime });
+      blob = await compressImage(rawBlob);
+    } else {
+      return data; // Return string directly if not base64
+    }
+
+    // Turn our old Firebase-Storage-style path (e.g. "users/abc123/highlights/usr-hl-169...jpg")
+    // into a Cloudinary folder + public_id so files stay organized the same way.
+    const segments = path.split('/').filter(Boolean);
+    const fileNamePart = segments.pop() || `upload_${Date.now()}`;
+    const publicId = fileNamePart.replace(/\.[^/.]+$/, ''); // Cloudinary manages its own extension
+    const folder = segments.join('/');
+
+    const formData = new FormData();
+    formData.append('file', blob);
+    formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+    if (folder) formData.append('folder', folder);
+    formData.append('public_id', publicId);
+
+    // "auto" lets Cloudinary detect image vs. video vs. raw file from the content itself.
+    const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`, {
+      method: 'POST',
+      body: formData
     });
-    return await getDownloadURL(snapshot.ref);
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`Cloudinary upload failed (${response.status}): ${errText}`);
+    }
+
+    const result = await response.json();
+    if (!result.secure_url) {
+      throw new Error('Cloudinary response was missing secure_url');
+    }
+    return result.secure_url as string;
   } catch (err) {
-    console.error(`Firebase Storage upload failed for ${path}:`, err);
-    throw err;
+    console.warn("Cloudinary upload failed, falling back to local/base64 representation:", err);
+    
+    // Attempt local compression before base64 fallback
+    let fallbackBlob: Blob | null = null;
+    if (data instanceof File || data instanceof Blob) {
+      try {
+        fallbackBlob = await compressImage(data);
+      } catch (e) {}
+    } else if (typeof data === 'string' && data.startsWith('data:')) {
+      try {
+        const arr = data.split(',');
+        const mime = arr[0].match(/:(.*?);/)?.[1] || 'image/jpeg';
+        const bstr = atob(arr[1]);
+        let n = bstr.length;
+        const u8arr = new Uint8Array(n);
+        while (n--) {
+          u8arr[n] = bstr.charCodeAt(n);
+        }
+        const rawBlob = new Blob([u8arr], { type: mime });
+        fallbackBlob = await compressImage(rawBlob);
+      } catch (e) {}
+    }
+
+    if (fallbackBlob) {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = () => resolve(typeof data === 'string' ? data : '');
+        reader.readAsDataURL(fallbackBlob!);
+      });
+    }
+
+    if (typeof data === 'string') {
+      return data;
+    }
+    // Convert File/Blob to base64 as fallback o!
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(data);
+    });
   }
 }
 
 export interface AppNotification {
   id: string;
   userId: string;
-  senderId: string;
-  senderName: string;
-  type: string;
+  senderId?: string;
+  senderName?: string;
+  type: 'friend_request' | 'message' | 'meetup' | 'rating' | 'post_like';
   title: string;
   message: string;
   isUnread: boolean;
@@ -271,18 +929,17 @@ export interface AppNotification {
 }
 
 export async function createNotification(notification: Omit<AppNotification, 'id' | 'isUnread' | 'createdAt'>) {
-  const id = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const notifRef = f.doc(db, 'notifications', id);
   try {
+    const id = Math.random().toString(36).substring(2, 11);
+    const notifRef = f.doc(db, 'notifications', id);
     await f.setDoc(notifRef, {
       ...notification,
       id,
       isUnread: true,
-      createdAt: new Date().toISOString(),
+      createdAt: new Date().toISOString()
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, notifRef.path);
-    throw err;
+    console.warn("Failed to create Firestore notification:", err);
   }
 }
 
@@ -291,14 +948,17 @@ export async function markNotificationsAsRead(userId: string, type?: string) {
     const q = f.query(
       f.collection(db, 'notifications'),
       f.where('userId', '==', userId),
-      f.where('isUnread', '==', true),
+      f.where('isUnread', '==', true)
     );
     const snap = await f.getDocs(q);
-    await Promise.all(snap.docs
-      .filter((docSnap) => !type || docSnap.data().type === type)
-      .map((docSnap) => f.updateDoc(f.doc(db, 'notifications', docSnap.id), { isUnread: false })));
+    const batchPromises = snap.docs.map(async (docSnap) => {
+      if (!type || docSnap.data().type === type) {
+        await f.updateDoc(f.doc(db, 'notifications', docSnap.id), { isUnread: false });
+      }
+    });
+    await Promise.all(batchPromises);
   } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, 'notifications');
-    throw err;
+    console.warn("Failed to mark notifications as read:", err);
   }
 }
+

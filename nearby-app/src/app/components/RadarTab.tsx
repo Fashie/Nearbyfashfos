@@ -137,6 +137,7 @@ export default function RadarTab() {
     customProfilePhoto,
     usingGoogleMaps,
     setUsingGoogleMaps,
+    hasValidGoogleMapsKey,
     radarRadius,
     setRadarRadius,
     showRadarDrawer,

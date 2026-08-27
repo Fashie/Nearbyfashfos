@@ -1,53 +1,42 @@
-import { db, auth, setDoc, handleFirestoreError, OperationType } from '../../../firebase';
+import { db, setDocument } from '../../../services/firebase';
 import { DirectMessage } from '../../../types';
-import { collection, query, where, onSnapshot, doc } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, getDocs, doc, setDoc } from 'firebase/firestore';
 
 export const chatService = {
-  getMessagesCollectionRef: () => collection(db, 'direct_messages'),
+  getMessagesCollectionRef: () => {
+    return collection(db, 'direct_messages');
+  },
 
   saveOrUpdateMessage: async (msg: DirectMessage, threadId: string) => {
-    const user = auth.currentUser;
-    if (!user) throw new Error('You must be signed in to send a message.');
-    if (threadId.startsWith('nb-')) return msg;
-
-    const docId = msg.id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
-    const participants = [user.uid, threadId].sort();
+    // Generate standard composite key if needed
+    const docId = msg.id || `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const msgRef = doc(db, 'direct_messages', docId);
+    
     const payload = {
       ...msg,
       id: docId,
-      chatThreadId: participants.join('_'),
-      participants,
-      senderId: msg.senderId === 'user' ? user.uid : msg.senderId,
-      receiverId: msg.receiverId === 'user' ? threadId : (msg.receiverId || threadId),
-      serverTime: new Date().toISOString(),
+      chatThreadId: threadId,
+      serverTime: new Date().toISOString()
     };
-
-    try {
-      await setDoc(doc(db, 'direct_messages', docId), payload, { merge: true });
-      return payload;
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `direct_messages/${docId}`);
-      throw err;
-    }
+    
+    await setDoc(msgRef, payload, { merge: true });
+    return payload;
   },
 
-  subscribeToMessages: (callback: (messages: DirectMessage[]) => void, onError?: (error: Error) => void) => {
-    const user = auth.currentUser;
-    if (!user) return () => undefined;
-
+  subscribeToMessages: (callback: (messages: DirectMessage[]) => void) => {
     const q = query(
       collection(db, 'direct_messages'),
-      where('participants', 'array-contains', user.uid),
+      orderBy('timestamp', 'asc')
     );
-
+    
     return onSnapshot(q, (snapshot) => {
-      const messages = snapshot.docs
-        .map((docSnap) => docSnap.data() as DirectMessage)
-        .sort((a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime());
+      const messages: DirectMessage[] = [];
+      snapshot.forEach((docSnap) => {
+        messages.push(docSnap.data() as DirectMessage);
+      });
       callback(messages);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'direct_messages');
-      onError?.(error);
+      console.error("Error subscribing to direct messages:", error);
     });
-  },
+  }
 };
