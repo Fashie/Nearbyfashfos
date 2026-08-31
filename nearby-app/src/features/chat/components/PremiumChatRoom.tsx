@@ -385,8 +385,8 @@ export const PremiumChatRoom = React.memo(function PremiumChatRoom({
   const slicedList = list.slice(-chatLimit);
 
   // Proximity details
-  const distanceStr = selectedNeighbor.distance 
-    ? (selectedNeighbor.distance < 1000 ? `${selectedNeighbor.distance}m Away` : `${(selectedNeighbor.distance/1000).toFixed(1)}km Away`)
+  const distanceStr = selectedNeighbor.distanceMeters
+    ? (selectedNeighbor.distanceMeters < 1000 ? `${selectedNeighbor.distanceMeters}m Away` : `${(selectedNeighbor.distanceMeters/1000).toFixed(1)}km Away`)
     : '320m Away';
 
   const getTrustStars = (score?: number) => {

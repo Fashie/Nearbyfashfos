@@ -772,8 +772,20 @@ export default function ChatTab() {
                       </p>
                       
                       {pendingFriendRequests.map((reqId) => {
-                        const requester = neighbors.find(n => n.id === reqId);
-                        if (!requester) return null;
+                        // Previously this returned null (rendering nothing) whenever the
+                        // requester wasn't in your current `neighbors` list - which happens
+                        // for anyone outside your live radar radius. That silently hid
+                        // pending requests with no indication anything was wrong. Fall back
+                        // to a generic placeholder so a request is always visible and
+                        // actionable, even before we know anything else about that person.
+                        const requester = neighbors.find(n => n.id === reqId) || {
+                          id: reqId,
+                          name: 'Neighbor',
+                          username: 'neighbor',
+                          avatarColor: 'bg-indigo-500',
+                          avatarEmoji: '🙋',
+                          distanceMeters: undefined
+                        };
 
                         return (
                           <div 
@@ -789,7 +801,7 @@ export default function ChatTab() {
                                   {requester.name}
                                 </h4>
                                 <p className={`text-xs truncate ${appTheme === 'dark' ? 'text-zinc-400' : 'text-zinc-500'}`}>
-                                  @{requester.username} • {requester.distanceMeters}m away
+                                  @{requester.username}{requester.distanceMeters !== undefined ? ` • ${requester.distanceMeters}m away` : ''}
                                 </p>
                               </div>
                             </div>

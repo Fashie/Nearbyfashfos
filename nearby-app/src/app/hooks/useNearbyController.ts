@@ -1,10 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense } from 'react';
 import { APIProvider, Map, AdvancedMarker, Pin as GMapPin, useMap, useMapsLibrary } from '@vis.gl/react-google-maps';
 import { motion, AnimatePresence } from 'motion/react';
-import GoogleMapIntegration from '../features/maps/components/GoogleMapIntegration';
-import { OnboardingScreen } from '../features/authentication/components/OnboardingScreen';
-import { CallOverlay } from '../features/calls/components/CallOverlay';
-import { LandingScreen } from '../features/authentication/components/LandingScreen';
 import {
   MapPin,
   Instagram,
@@ -84,9 +80,9 @@ import {
   Bluetooth,
   Star
 } from 'lucide-react';
-import { Neighbor, DirectMessage, CallState, StorySnap, PublicSnap, Meetup, MeetupRating } from '../types';
-import { NEIGHBORHOODS, NIGERIAN_STATES, INITIAL_NEIGHBORS, INITIAL_MESSAGES, LocationPreset, INITIAL_NOTES, UserNote } from '../mockData';
-import { getStateStreets } from '../utils';
+import { Neighbor, DirectMessage, CallState, StorySnap, PublicSnap, Meetup, MeetupRating } from '../../types';
+import { NEIGHBORHOODS, NIGERIAN_STATES, INITIAL_NEIGHBORS, INITIAL_MESSAGES, LocationPreset, INITIAL_NOTES, UserNote } from '../../mockData';
+import { getStateStreets } from '../../utils';
 import {
   auth,
   db,
@@ -115,15 +111,12 @@ import {
   createNotification,
   markNotificationsAsRead,
   AppNotification
-} from '../firebase';
+} from '../../firebase';
 import {
   User as FirebaseUser,
   sendPasswordResetEmail,
   sendEmailVerification
 } from 'firebase/auth';
-import ExploreTab from '../features/explore/components/ExploreTab';
-import { PremiumChatRoom } from '../features/chat/components/PremiumChatRoom';
-import { PremiumProfileView } from '../features/profile/components/PremiumProfileView';
 
 
 const GOOGLE_MAPS_API_KEY =
@@ -951,6 +944,15 @@ export function useNearbyController() {
   
   // Under the hood state for messages
   const [chatMessages, _setChatMessages] = useState<Record<string, DirectMessage[]>>(INITIAL_MESSAGES);
+
+  // Kept in sync below purely so the users-listener effect (which builds the `neighbors`
+  // list) can check "do I already have a conversation with this person" without needing
+  // chatMessages in its dependency array - that list re-subscribes to a Firestore
+  // collection listener, and we don't want it tearing down/rebuilding on every message.
+  const chatMessagesRef = useRef<Record<string, DirectMessage[]>>(chatMessages);
+  useEffect(() => {
+    chatMessagesRef.current = chatMessages;
+  }, [chatMessages]);
   
   // Custom wrapper to update messages state locally
   const setChatMessages = (
@@ -2385,6 +2387,13 @@ export function useNearbyController() {
       }
     } catch (err) {
       console.warn("Firestore message write avoided/failed (quota/offline fallback):", err);
+      handleFirestoreError(err, OperationType.WRITE, 'direct_messages');
+      // Show the real Firestore error text on-screen (not just a generic "check your
+      // connection") so this is diagnosable without needing to open devtools - especially
+      // important on mobile where the console usually isn't reachable at all.
+      const errMsg = err instanceof Error ? err.message : String(err);
+      setAudioFeedback(`⚠️ Message failed to send: ${errMsg}`);
+      setTimeout(() => setAudioFeedback(""), 6000);
     }
   };
 
@@ -3202,6 +3211,13 @@ export function useNearbyController() {
         const isFriendRequester = pendingFriendRequests.includes(u.uid);
         const isFriendRequested = sentFriendRequestIds.includes(u.uid);
         const hasRelationship = isUserFriend || isFriendRequester || isFriendRequested;
+        // Don't require "friend" status to keep an existing conversation visible - two
+        // people can message each other in this app without being friends first, and if
+        // that's the only requirement checked below, the other side quietly disappears
+        // from your neighbors/chat list the moment their live distance reads outside your
+        // radius, even mid-conversation.
+        const hasExistingChat = (chatMessagesRef.current[u.uid]?.length ?? 0) > 0;
+        const keepRegardlessOfRadius = hasRelationship || hasExistingChat;
 
         // 1. Radar Mode verification: Show only users who have Radar Mode turned ON o!
         const isRadarEnabled = u.isUserVisibleOnRadar !== false;
@@ -3230,7 +3246,7 @@ export function useNearbyController() {
 
         // 3. Proximity Filter check o!
         const isWithinRadius = distanceMeters <= radarRadius;
-        if (!isWithinRadius && !hasRelationship) return;
+        if (!isWithinRadius && !keepRegardlessOfRadius) return;
         
         // Ignore banned users
         if (u.banned === true || (u.reportsCount !== undefined && u.reportsCount >= 10)) return;
@@ -4746,7 +4762,7 @@ export function useNearbyController() {
       setSimulatedTypingMap(prev => ({ ...prev, [neighId]: false }));
 
       const replyMsg: DirectMessage = {
-        id: `msg-reply-${Date.now()}`,
+        id: `msg-reply-${auth.currentUser?.uid || 'anon'}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
         senderId: neighId,
         receiverId: 'user',
         chatThreadId: neighId,
@@ -4785,10 +4801,27 @@ export function useNearbyController() {
     const inputContent = customText !== undefined ? customText : textInput;
     if (!inputContent.trim() && !customImage && !customVoiceDuration && !customType) return;
 
+    // Friends-only messaging: real users (not the simulated "nb-" demo companions) must be
+    // mutual friends before a DM can be sent. This is enforced for real in the Firestore
+    // rules too (see firestore.rules) - this check just gives an immediate, friendly
+    // message instead of letting the send silently fail against the server rule.
+    if (!selectedNeighbor.id.startsWith('nb-') && !friendIds.includes(selectedNeighbor.id)) {
+      setAudioFeedback(`⚠️ You can only message friends. Add ${selectedNeighbor.name} as a friend first.`);
+      setTimeout(() => setAudioFeedback(""), 3500);
+      return;
+    }
+
     triggerBeep(500, 0.08, 'sine');
     
     const resolvedType = customType || (customImage ? 'image' : (customVoiceDuration ? 'voice' : 'text'));
-    const msgId = `msg-${Date.now()}`;
+    // Message IDs are the actual Firestore document ID in the shared, global
+    // direct_messages collection - a bare Date.now() timestamp with no per-sender
+    // component can collide between two DIFFERENT people's messages sent in the same
+    // millisecond (easy to hit when testing from two devices). A collision means the
+    // second write's merge silently blends into the first document, which is how one
+    // person's message can end up displaying as sent by someone else. Namespacing by
+    // the sender's own uid plus a random suffix makes a collision effectively impossible.
+    const msgId = `msg-${auth.currentUser?.uid || 'anon'}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
     const newMsg: DirectMessage = {
       id: msgId,
@@ -4984,7 +5017,7 @@ export function useNearbyController() {
     const fUser = auth.currentUser;
     targetNeighborIds.forEach(async (neighId) => {
       const forwardedMsg: DirectMessage = {
-        id: `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        id: `msg-${fUser?.uid || 'anon'}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
         senderId: 'user',
         receiverId: neighId,
         chatThreadId: neighId,
@@ -5562,7 +5595,7 @@ export function useNearbyController() {
       await setDoc(doc(db, 'meetups', meetupId), newMeetup);
 
       // Send direct message so they see it in their Chat Tab!
-      const msgId = `msg-meetup-${Date.now()}`;
+      const msgId = `msg-meetup-${currentUser.uid}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const formattedTime = new Date(scheduledTime).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
       const messageText = `🤝 Let's meet face-to-face! I scheduled a safe meetup at:\n📍 *${meetingPoint}*\n📅 *${formattedTime}*\n\nPlease confirm or open our profile to mark it as completed once we meet!`;
 
@@ -5711,20 +5744,28 @@ export function useNearbyController() {
     // Perform Firestore updates safely in background try-catch blocks
     try {
       const userDocRef = doc(db, 'users', receiverId);
-      await updateDoc(userDocRef, {
-        friendIds: arrayUnion(senderId)
-      });
+      // setDoc(..., {merge:true}) instead of updateDoc: updateDoc THROWS "no document to
+      // update" if the target doc doesn't exist for any reason, which would silently abort
+      // this whole step with zero feedback. merge:true creates the doc if missing and just
+      // updates the field otherwise - strictly safer for a cross-account write like this.
+      await setDoc(userDocRef, { friendIds: arrayUnion(senderId) }, { merge: true });
     } catch (e) {
-      console.warn("Firestore user sync friend union failed, continuing in offline/mock mode o!:", e);
+      console.error("Firestore user sync friend union failed:", e);
+      handleFirestoreError(e, OperationType.UPDATE, `users/${receiverId}`);
+      const errMsg = e instanceof Error ? e.message : String(e);
+      setAudioFeedback(`⚠️ Friend sync failed on your side: ${errMsg}`);
+      setTimeout(() => setAudioFeedback(""), 6000);
     }
 
     try {
       const senderDocRef = doc(db, 'users', senderId);
-      await updateDoc(senderDocRef, {
-        friendIds: arrayUnion(receiverId)
-      });
+      await setDoc(senderDocRef, { friendIds: arrayUnion(receiverId) }, { merge: true });
     } catch (e) {
-      console.warn("Firestore sender sync friend union failed, continuing in offline/mock mode o!:", e);
+      console.error("Firestore sender sync friend union failed:", e);
+      handleFirestoreError(e, OperationType.UPDATE, `users/${senderId}`);
+      const errMsg = e instanceof Error ? e.message : String(e);
+      setAudioFeedback(`⚠️ Friend sync failed on their side: ${errMsg}`);
+      setTimeout(() => setAudioFeedback(""), 6000);
     }
 
     try {
@@ -5756,15 +5797,29 @@ export function useNearbyController() {
         const userDocRef = doc(db, 'users', currentUser.uid);
         const neighborDocRef = doc(db, 'users', neighborId);
 
-        await updateDoc(userDocRef, {
-          friendIds: arrayRemove(neighborId)
-        });
-        await updateDoc(neighborDocRef, {
-          friendIds: arrayRemove(currentUser.uid)
-        });
-        
-        await deleteDoc(doc(db, 'friend_requests', `${currentUser.uid}_${neighborId}`));
-        await deleteDoc(doc(db, 'friend_requests', `${neighborId}_${currentUser.uid}`));
+        // Each write is now independent (own try/catch) instead of one throwing and
+        // aborting the rest - previously, if removing yourself from the other person's
+        // friendIds failed, the whole function threw and even the friend_requests cleanup
+        // below never ran, leaving things in a half-removed state.
+        try {
+          await setDoc(userDocRef, { friendIds: arrayRemove(neighborId) }, { merge: true });
+        } catch (e) {
+          console.error("Failed to remove friend from your own list:", e);
+          handleFirestoreError(e, OperationType.UPDATE, `users/${currentUser.uid}`);
+        }
+        try {
+          await setDoc(neighborDocRef, { friendIds: arrayRemove(currentUser.uid) }, { merge: true });
+        } catch (e) {
+          console.error("Failed to remove yourself from their friend list:", e);
+          handleFirestoreError(e, OperationType.UPDATE, `users/${neighborId}`);
+        }
+
+        try {
+          await deleteDoc(doc(db, 'friend_requests', `${currentUser.uid}_${neighborId}`));
+          await deleteDoc(doc(db, 'friend_requests', `${neighborId}_${currentUser.uid}`));
+        } catch (e) {
+          console.warn("friend_requests cleanup on unfriend failed (likely already deleted):", e);
+        }
 
         triggerBeep(320, 0.1, 'triangle');
         setAudioFeedback("Removed from friends.");
@@ -5809,7 +5864,13 @@ export function useNearbyController() {
   }, [currentUser, friendIds, pendingFriendRequests, sentFriendRequestIds, triggerBeep, handleAcceptFriendRequest]);
 
   const sendPrivateMessageToNeighbor = useCallback(async (neighborId: string, text: string) => {
-    const msgId = `msg-${Date.now()}`;
+    if (!neighborId.startsWith('nb-') && !friendIds.includes(neighborId)) {
+      setAudioFeedback("⚠️ You can only message friends. Add them as a friend first.");
+      setTimeout(() => setAudioFeedback(""), 3500);
+      return;
+    }
+
+    const msgId = `msg-${auth.currentUser?.uid || 'anon'}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const newMsg: DirectMessage = {
       id: msgId,
       senderId: 'user',
@@ -5831,7 +5892,7 @@ export function useNearbyController() {
     } catch (e) {
       console.warn("Offline fallback registered or direct message stored locally.");
     }
-  }, []);
+  }, [friendIds]);
 
   const onOpenNeighborChat = useCallback((neighborId: string) => {
     const nb = neighbors.find(n => n.id === neighborId);
@@ -6056,7 +6117,7 @@ export function useNearbyController() {
     
     messagesToForward.forEach((msg, index) => {
       setTimeout(() => {
-        const msgId = `msg-forwarded-${Date.now()}-${index}`;
+        const msgId = `msg-forwarded-${auth.currentUser?.uid || 'anon'}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 9)}`;
         const forwardedMsg: DirectMessage = {
           id: msgId,
           senderId: 'user',
@@ -6401,12 +6462,19 @@ export function useNearbyController() {
   // Filter neighbors based on selected meter distance radar cutoff
   const filteredNeighbors = useMemo(() => {
     return syncedNeighbors.filter(nb => {
-      const isWithinRadius = nb.id === 'nb-myai' || nb.distanceMeters <= radarRadius;
+      // A conversation you already have should never disappear just because the other
+      // person's live GPS distance currently reads outside your radar radius (they closed
+      // the app, walked off, or their location simply hasn't refreshed). Without the
+      // "already have messages" clause below, this filter was silently hiding entire chat
+      // threads from the Chats tab - the messages were still safely in Firestore, they
+      // just never rendered, which looked exactly like "replies aren't coming through".
+      const hasExistingChat = (chatMessages[nb.id]?.length ?? 0) > 0;
+      const isWithinRadius = nb.id === 'nb-myai' || nb.distanceMeters <= radarRadius || hasExistingChat;
       const matchesSearch = nb.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
                             nb.username.toLowerCase().includes(searchQuery.toLowerCase());
       return isWithinRadius && matchesSearch;
     });
-  }, [syncedNeighbors, radarRadius, searchQuery]);
+  }, [syncedNeighbors, radarRadius, searchQuery, chatMessages]);
 
   // Memoize sorted & filtered chat lists to prevent expensive computations on every render frame
   const sortedChatList = useMemo(() => {

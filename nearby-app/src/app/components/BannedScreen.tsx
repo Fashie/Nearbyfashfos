@@ -129,6 +129,8 @@ import { useNearbyRuntime } from '../context/NearbyRuntimeContext';
 export default function BannedScreen() {
   const {
   triggerBeep,
+  isCurrentMeBanned,
+  currentUser,
 } = useNearbyRuntime();
 
     if (isCurrentMeBanned && currentUser) {
