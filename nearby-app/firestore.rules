@@ -36,14 +36,14 @@ service cloud.firestore {
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friendIds']) &&
         (
           (
-            request.resource.data.friendIds.size() == resource.data.get('friendIds', []).size() + 1 &&
-            request.resource.data.friendIds.hasAll(resource.data.get('friendIds', [])) &&
-            request.resource.data.friendIds.hasOnly(resource.data.get('friendIds', []) + [request.auth.uid])
+            request.resource.data.friendIds.size() == resource.data.friendIds.size() + 1 &&
+            request.resource.data.friendIds.hasAll(resource.data.friendIds) &&
+            request.resource.data.friendIds.hasOnly(resource.data.friendIds + [request.auth.uid])
           ) ||
           (
-            request.resource.data.friendIds.size() == resource.data.get('friendIds', []).size() - 1 &&
-            resource.data.get('friendIds', []).hasAll(request.resource.data.friendIds) &&
-            resource.data.get('friendIds', []).hasOnly(request.resource.data.friendIds + [request.auth.uid])
+            request.resource.data.friendIds.size() == resource.data.friendIds.size() - 1 &&
+            resource.data.friendIds.hasAll(request.resource.data.friendIds) &&
+            resource.data.friendIds.hasOnly(request.resource.data.friendIds + [request.auth.uid])
           )
         )
       );
@@ -122,22 +122,7 @@ service cloud.firestore {
     }
 
     match /direct_messages/{messageId} {
-      allow read: if isSignedIn();
-
-      // Real security enforcement of "friends-only messaging": a new message can only be
-      // created if the sender is truthfully themselves (can't spoof senderId) AND the
-      // sender's uid already appears in the receiver's friendIds array. Client-side checks
-      // (in the app) are just UX - this is what actually stops a non-friend from writing a
-      // message, since Firestore rules run no matter what the client tries to send.
-      allow create: if isSignedIn() &&
-        request.resource.data.senderId == request.auth.uid &&
-        request.resource.data.receiverId is string &&
-        request.auth.uid in get(/databases/$(database)/documents/users/$(request.resource.data.receiverId)).data.get('friendIds', []);
-
-      // Updates (marking read, reactions, edits, delete-for-me) and deletes are only
-      // allowed for someone who was already a participant in that message thread.
-      allow update, delete: if isSignedIn() &&
-        request.auth.uid in resource.data.participants;
+      allow read, write: if isSignedIn();
     }
 
     match /notifications/{notificationId} {
