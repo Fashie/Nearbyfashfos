@@ -1,171 +1,291 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Default catch-all denies everything by default
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // Helper functions
-    function isSignedIn() {
+    function signedIn() {
       return request.auth != null;
     }
 
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+    function owner(userId) {
+      return signedIn() && request.auth.uid == userId;
     }
 
-    // Users collection
-    match /users/{userId} {
-      allow read: if isSignedIn();
-      allow create: if isOwner(userId);
-      allow delete: if isOwner(userId);
-      allow update: if isOwner(userId) || (
-        isSignedIn() && 
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ratingsCount', 'totalRatingPoints', 'trustScore', 'meetupsCompleted', 'meetupHappened', 'ratedBy'])
-      ) || (
-        // Accepting/removing a friend needs to update BOTH users' documents, but a user
-        // can only write their own doc under the rule above - so without this, the other
-        // side's friendIds array silently never gets updated (permission-denied, swallowed
-        // client-side), which is why account A kept showing "Add Friend" even after B
-        // accepted. This lets any signed-in user add or remove ONLY their own uid to/from
-        // someone else's friendIds array, and nothing else on the document - they still
-        // cannot touch any other field or any other entry in that array.
-        isSignedIn() &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friendIds']) &&
-        (
+    function areFriends(a, b) {
+      return signedIn()
+        && a is string
+        && b is string
+        && exists(/databases/$(database)/documents/users/$(a))
+        && exists(/databases/$(database)/documents/users/$(b))
+        && get(/databases/$(database)/documents/users/$(a)).data.get('friendIds', []).hasAll([b])
+        && get(/databases/$(database)/documents/users/$(b)).data.get('friendIds', []).hasAll([a]);
+    }
+
+    function validFriendArrayChange(targetUserId) {
+      return signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friendIds'])
+        && request.resource.data.get('friendIds', []).size() >= 0
+        && resource.data.get('friendIds', []).size() >= 0
+        && (
+          // Adding the authenticated user to another user's friend list is only valid
+          // while that user has a pending request from the target user.
           (
-            request.resource.data.friendIds.size() == resource.data.friendIds.size() + 1 &&
-            request.resource.data.friendIds.hasAll(resource.data.friendIds) &&
-            request.resource.data.friendIds.hasOnly(resource.data.friendIds + [request.auth.uid])
-          ) ||
-          (
-            request.resource.data.friendIds.size() == resource.data.friendIds.size() - 1 &&
-            resource.data.friendIds.hasAll(request.resource.data.friendIds) &&
-            resource.data.friendIds.hasOnly(request.resource.data.friendIds + [request.auth.uid])
+            targetUserId != request.auth.uid
+            && request.resource.data.friendIds.size() == resource.data.get('friendIds', []).size() + 1
+            && request.resource.data.friendIds.hasAll(resource.data.get('friendIds', []))
+            && request.resource.data.friendIds.hasOnly(resource.data.get('friendIds', []) + [request.auth.uid])
+            && exists(/databases/$(database)/documents/friend_requests/$(targetUserId)_$(request.auth.uid))
+            && get(/databases/$(database)/documents/friend_requests/$(targetUserId)_$(request.auth.uid)).data.senderId == targetUserId
+            && get(/databases/$(database)/documents/friend_requests/$(targetUserId)_$(request.auth.uid)).data.receiverId == request.auth.uid
+            && get(/databases/$(database)/documents/friend_requests/$(targetUserId)_$(request.auth.uid)).data.status == 'pending'
           )
-        )
-      );
+          ||
+          // A user may remove themselves from another user's friend list, but may not
+          // remove anyone else.
+          (
+            targetUserId != request.auth.uid
+            && resource.data.get('friendIds', []).hasAll([request.auth.uid])
+            && request.resource.data.friendIds.size() == resource.data.get('friendIds', []).size() - 1
+            && resource.data.friendIds.hasAll(request.resource.data.friendIds)
+            && resource.data.friendIds.hasOnly(request.resource.data.friendIds + [request.auth.uid])
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('friendIds', []).hasAll([targetUserId])
+          )
+        );
+    }
 
-      // Sub-collections inside users
+    // Users and their private subcollections.
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create: if owner(userId);
+      allow delete: if owner(userId);
+      allow update: if owner(userId)
+        || validFriendArrayChange(userId)
+        || (
+          signedIn()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'ratingsCount', 'totalRatingPoints', 'trustScore', 'meetupsCompleted', 'meetupHappened', 'ratedBy'
+          ])
+        );
+
       match /messages/{messageId} {
-        allow read, write: if isOwner(userId);
+        allow read, write: if owner(userId);
       }
+
       match /stories/{storyId} {
-        allow read: if isSignedIn();
-        allow write: if isOwner(userId);
+        allow read: if signedIn();
+        allow write: if owner(userId);
       }
+
       match /posts/{postId} {
-        allow read: if isSignedIn();
-        allow write: if isOwner(userId);
+        allow read: if signedIn();
+        allow write: if owner(userId);
       }
+
       match /highlights/{highlightId} {
-        allow read: if isSignedIn();
-        allow write: if isOwner(userId);
+        allow read: if signedIn();
+        allow write: if owner(userId);
       }
+
       match /calls/{callId} {
-        allow read, write: if isSignedIn();
+        // Owner can always manage their own signaling document. The other participant
+        // may access it only when the document identifies both call participants.
+        allow read: if owner(userId)
+          || (signedIn() && resource.data.get('callerId', '') == request.auth.uid)
+          || (signedIn() && resource.data.get('receiverId', '') == request.auth.uid);
+
+        allow create: if owner(userId)
+          || (
+            signedIn()
+            && request.resource.data.get('callerId', '') == request.auth.uid
+            && request.resource.data.get('receiverId', '') == userId
+            && areFriends(request.auth.uid, userId)
+          );
+
+        allow update: if owner(userId)
+          || (
+            signedIn()
+            && resource.data.get('callerId', '') == request.auth.uid
+            && resource.data.get('receiverId', '') == userId
+          )
+          || (
+            signedIn()
+            && resource.data.get('receiverId', '') == request.auth.uid
+            && resource.data.get('callerId', '') == userId
+          );
+
+        allow delete: if owner(userId)
+          || (signedIn() && resource.data.get('callerId', '') == request.auth.uid)
+          || (signedIn() && resource.data.get('receiverId', '') == request.auth.uid);
       }
     }
 
-    // Settings collection
     match /settings/{userId} {
-      allow read, write: if isOwner(userId);
+      allow read, write: if owner(userId);
     }
 
-    // Visibility Settings collection
     match /visibilitySettings/{userId} {
-      allow read, write: if isOwner(userId);
-    }
-
-    // Top-level collections
-    match /groups/{groupId} {
-      allow read, write: if isSignedIn();
-      
-      match /messages/{messageId} {
-        allow read, write: if isSignedIn();
-      }
+      allow read, write: if owner(userId);
     }
 
     match /locations/{userId} {
-      allow read: if isSignedIn();
-      allow write: if isOwner(userId);
-    }
-
-    match /friendships/{friendshipId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /friend_requests/{requestId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /friend_requests_incoming/{requestId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /friend_requests_outgoing/{requestId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /friendRequests/{requestId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /Conversations/{conversationId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /messages/{messageId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /direct_messages/{messageId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /notifications/{notificationId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /communities/{communityId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /community_discussions/{discussionId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /posts/{postId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn();
-    }
-
-    match /meetups/{meetupId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /meetupRatings/{ratingId} {
-      allow read, write: if isSignedIn();
+      allow read: if signedIn();
+      allow write: if owner(userId);
     }
 
     match /liveLocations/{userId} {
-      allow read: if isSignedIn();
-      allow write: if isOwner(userId);
-    }
-
-    match /safeMeetups/{placeId} {
-      allow read, write: if isSignedIn();
+      allow read: if signedIn();
+      allow write: if owner(userId);
     }
 
     match /presence/{userId} {
-      allow read: if isSignedIn();
-      allow write: if isOwner(userId);
+      allow read: if signedIn();
+      allow create, update, delete: if owner(userId);
     }
 
+    // Friend requests are private to the two participants.
+    match /friend_requests/{requestId} {
+      allow read: if signedIn()
+        && (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+
+      allow create: if signedIn()
+        && request.resource.data.senderId == request.auth.uid
+        && request.resource.data.receiverId is string
+        && request.resource.data.receiverId != request.auth.uid
+        && request.resource.data.status == 'pending'
+        && requestId == request.auth.uid + '_' + request.resource.data.receiverId;
+
+      allow update: if signedIn()
+        && resource.data.status == 'pending'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+        && (resource.data.receiverId == request.auth.uid || resource.data.senderId == request.auth.uid)
+        && request.resource.data.senderId == resource.data.senderId
+        && request.resource.data.receiverId == resource.data.receiverId
+        && request.resource.data.status in ['pending', 'accepted', 'declined'];
+
+      allow delete: if signedIn()
+        && (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+    }
+
+    // Legacy request collections are retained only for existing reads/writes that may
+    // still exist in older clients; they are no longer a free-for-all.
+    match /friend_requests_incoming/{requestId} {
+      allow read, delete: if signedIn()
+        && resource.data.receiverId == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.receiverId == request.auth.uid;
+    }
+
+    match /friend_requests_outgoing/{requestId} {
+      allow read, delete: if signedIn()
+        && resource.data.senderId == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.senderId == request.auth.uid;
+    }
+
+    match /friendRequests/{requestId} {
+      allow read: if signedIn()
+        && (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+      allow write: if signedIn()
+        && (request.resource.data.senderId == request.auth.uid || request.resource.data.receiverId == request.auth.uid);
+    }
+
+    // A friendship document, if used by an older/newer client, is visible only to its
+    // two participants. The current app uses users.friendIds as the authoritative state.
+    match /friendships/{friendshipId} {
+      allow read, write: if signedIn()
+        && (resource.data.userA == request.auth.uid
+          || resource.data.userB == request.auth.uid
+          || request.resource.data.userA == request.auth.uid
+          || request.resource.data.userB == request.auth.uid);
+    }
+
+    // Direct messages: only the two participants can read/update/delete, and creation
+    // requires a real mutual friendship.
+    match /direct_messages/{messageId} {
+      allow read: if signedIn()
+        && request.auth.uid in resource.data.participants;
+
+      allow create: if signedIn()
+        && request.resource.data.senderId == request.auth.uid
+        && request.resource.data.receiverId is string
+        && request.resource.data.receiverId != request.auth.uid
+        && request.resource.data.participants is list
+        && request.resource.data.participants.hasAll([request.auth.uid, request.resource.data.receiverId])
+        && request.resource.data.participants.size() == 2
+        && areFriends(request.auth.uid, request.resource.data.receiverId);
+
+      allow update: if signedIn()
+        && request.auth.uid in resource.data.participants
+        && request.resource.data.participants == resource.data.participants
+        && request.resource.data.senderId == resource.data.senderId
+        && request.resource.data.receiverId == resource.data.receiverId;
+
+      allow delete: if signedIn()
+        && request.auth.uid in resource.data.participants;
+    }
+
+    match /notifications/{notificationId} {
+      allow read, update, delete: if signedIn()
+        && resource.data.userId == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.senderId == request.auth.uid
+        && request.resource.data.userId is string;
+    }
+
+    // Top-level call log is restricted to the caller and receiver.
     match /calls/{callId} {
-      allow read, write: if isSignedIn();
+      allow read: if signedIn()
+        && (resource.data.callerUID == request.auth.uid || resource.data.receiverUID == request.auth.uid);
+      allow create: if signedIn()
+        && request.resource.data.callerUID == request.auth.uid
+        && request.resource.data.receiverUID is string
+        && request.resource.data.receiverUID != request.auth.uid
+        && areFriends(request.auth.uid, request.resource.data.receiverUID);
+      allow update: if signedIn()
+        && (resource.data.callerUID == request.auth.uid || resource.data.receiverUID == request.auth.uid)
+        && request.resource.data.callerUID == resource.data.callerUID
+        && request.resource.data.receiverUID == resource.data.receiverUID;
+      allow delete: if signedIn()
+        && (resource.data.callerUID == request.auth.uid || resource.data.receiverUID == request.auth.uid);
+    }
+
+    // Group/other app data. These are left functional because the current product uses
+    // them independently of the one-to-one friend relationship.
+    match /groups/{groupId} {
+      allow read, write: if signedIn();
+      match /messages/{messageId} {
+        allow read, write: if signedIn();
+      }
+    }
+
+    match /posts/{postId} {
+      allow read, write: if signedIn();
+    }
+
+    match /communities/{communityId} {
+      allow read, write: if signedIn();
+    }
+
+    match /community_discussions/{discussionId} {
+      allow read, write: if signedIn();
+    }
+
+    match /meetups/{meetupId} {
+      allow read, write: if signedIn();
+    }
+
+    match /meetupRatings/{ratingId} {
+      allow read, write: if signedIn();
+    }
+
+    match /safeMeetups/{placeId} {
+      allow read, write: if signedIn();
+    }
+
+    // Conversation collection is unused by the current chat implementation but kept
+    // compatible for existing data.
+    match /Conversations/{conversationId} {
+      allow read, write: if signedIn();
+    }
+
+    match /messages/{messageId} {
+      allow read, write: if signedIn();
     }
   }
 }

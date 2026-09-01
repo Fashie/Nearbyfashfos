@@ -110,7 +110,8 @@ import {
   uploadToStorage,
   createNotification,
   markNotificationsAsRead,
-  AppNotification
+  AppNotification,
+  signInWithRedirect
 } from '../../firebase';
 import {
   User as FirebaseUser,
@@ -1522,23 +1523,32 @@ export function useNearbyController() {
 
   const loginWithGoogle = async () => {
     const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
     setAuthError('');
     setAuthLoading(true);
     try {
       triggerBeep(580, 0.1);
-      const result = await signInWithPopup(auth, provider);
-      setAudioFeedback("Signed in with Google.");
-      setTimeout(() => setAudioFeedback(""), 2200);
+      const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      if (isMobile) {
+        await signInWithRedirect(auth, provider);
+        return;
+      }
+      await signInWithPopup(auth, provider);
+      setAudioFeedback('Signed in with Google.');
+      setTimeout(() => setAudioFeedback(''), 2200);
     } catch (err: any) {
-      console.error("Login failure: ", err);
-      let errorMsg = err.message || "Failed to sign in with Google.";
-      if (err.code === 'auth/unauthorized-domain' || (err.message && err.message.includes('unauthorized-domain'))) {
-        errorMsg = `🔐 Firebase Domain Unauthorized!\n\nPlease add this dynamic preview domain ("${window.location.hostname}") to the "Authorized domains" list in your Firebase Console under: Authentication -> Settings -> Authorized domains. This will authorize Google Sign-In securely o!`;
+      console.error('Login failure:', err);
+      if (err.code === 'auth/network-request-failed' || err.code === 'auth/popup-blocked' || err.code === 'auth/popup-closed-by-user') {
+        try { await signInWithRedirect(auth, provider); return; } catch (redirectErr: any) { err = redirectErr; }
+      }
+      let errorMsg = err.message || 'Failed to sign in with Google.';
+      if (err.code === 'auth/unauthorized-domain') {
+        errorMsg = `Firebase is not authorizing this domain (${window.location.hostname}). Add it under Authentication → Settings → Authorized domains.`;
       }
       setAuthError(errorMsg);
       setAuthLoading(false);
-      setAudioFeedback("Google sign-in failed.");
-      setTimeout(() => setAudioFeedback(""), 2500);
+      setAudioFeedback('Google sign-in failed.');
+      setTimeout(() => setAudioFeedback(''), 2500);
     }
   };
 
@@ -2277,20 +2287,19 @@ export function useNearbyController() {
     if (!currentUser || !selectedNeighborId || selectedNeighbor?.isGroup) return;
 
     const isTyping = textInput.trim().length > 0;
-    const userDocRef = doc(db, 'users', currentUser.uid);
     const presenceDocRef = doc(db, 'presence', currentUser.uid);
 
     const delayDebounceFn = setTimeout(() => {
       const typingTarget = isTyping ? selectedNeighborId : "";
       
-      setDoc(userDocRef, {
-        typingTo: typingTarget
-      }, { merge: true }).catch(() => {});
-
       setDoc(presenceDocRef, {
+        uid: currentUser.uid,
         typing: typingTarget,
+        currentConversation: selectedNeighborId,
         updatedAt: new Date().toISOString()
-      }, { merge: true }).catch(() => {});
+      }, { merge: true }).catch((err) => {
+        console.warn('Typing presence update failed:', err);
+      });
     }, 450);
 
     return () => clearTimeout(delayDebounceFn);
@@ -2394,7 +2403,9 @@ export function useNearbyController() {
       const errMsg = err instanceof Error ? err.message : String(err);
       setAudioFeedback(`⚠️ Message failed to send: ${errMsg}`);
       setTimeout(() => setAudioFeedback(""), 6000);
+      return false;
     }
+    return true;
   };
 
   const markMessagesAsRead = async (neighborId: string) => {
@@ -3982,6 +3993,12 @@ export function useNearbyController() {
 
     const target = neighbors.find(n => n.id === neighborId);
     if (!target) return;
+
+    if (!neighborId.startsWith('nb-') && !friendIds.includes(neighborId)) {
+      setAudioFeedback('⚠️ You can only call friends. Accept the friend request first.');
+      setTimeout(() => setAudioFeedback(''), 3500);
+      return;
+    }
     
     const callId = `call-${Date.now()}`;
     triggerBeep(580, 0.15, 'triangle');
@@ -4207,6 +4224,7 @@ export function useNearbyController() {
       if (currentUser) {
         await setDoc(doc(db, 'users', neighborId, 'calls', 'active'), {
           callerId: currentUser.uid,
+          receiverId: neighborId,
           callerName: userDisplayName || 'Nearby Friend',
           type,
           status: 'ringing',
@@ -4853,62 +4871,34 @@ export function useNearbyController() {
       [selectedNeighbor.id]: [...(prev[selectedNeighbor.id] || []), newMsg]
     }));
 
-    if (customText === undefined) {
-      setTextInput('');
-    }
-
     const fUser = auth.currentUser;
 
-    setTimeout(async () => {
-      const sentMsg = { ...newMsg, status: 'sent' as const };
-      
+    if (fUser && !selectedNeighbor.id.startsWith('nb-')) {
+      const persisted = await saveOrUpdateMessageInFirestore({ ...newMsg, status: 'sent' }, selectedNeighbor.id);
       _setChatMessages(prev => {
         const list = prev[selectedNeighbor.id] || [];
         const idx = list.findIndex(m => m.id === msgId);
-        if (idx > -1) {
-          const copy = [...list];
-          copy[idx] = sentMsg;
-          return { ...prev, [selectedNeighbor.id]: copy };
-        }
-        return prev;
+        if (idx === -1) return prev;
+        const copy = [...list];
+        copy[idx] = { ...copy[idx], status: persisted ? 'sent' : ('failed' as any) };
+        return { ...prev, [selectedNeighbor.id]: copy };
       });
+      if (persisted && customText === undefined) setTextInput('');
+      return;
+    }
 
-      if (fUser && !selectedNeighbor.id.startsWith('nb-')) {
-        await saveOrUpdateMessageInFirestore(sentMsg, selectedNeighbor.id);
-      }
-
-      if (selectedNeighbor.id.startsWith('nb-')) {
-        setTimeout(() => {
-          _setChatMessages(prev => {
-            const list = prev[selectedNeighbor.id] || [];
-            const idx = list.findIndex(m => m.id === msgId);
-            if (idx > -1) {
-              const copy = [...list];
-              copy[idx] = { ...sentMsg, status: 'delivered' as const };
-              return { ...prev, [selectedNeighbor.id]: copy };
-            }
-            return prev;
-          });
-
-          setTimeout(() => {
-            _setChatMessages(prev => {
-              const list = prev[selectedNeighbor.id] || [];
-              const idx = list.findIndex(m => m.id === msgId);
-              if (idx > -1) {
-                const copy = [...list];
-                copy[idx] = { ...sentMsg, status: 'read' as const };
-                return { ...prev, [selectedNeighbor.id]: copy };
-              }
-              return prev;
-            });
-
-            const promptText = resolvedType === 'text' ? inputContent : `[Snap photo sent]`;
-            triggerSimulatedResponse(selectedNeighbor.id, promptText, customImage);
-
-          }, 650);
-        }, 400);
-      }
-    }, 150);
+    if (customText === undefined) setTextInput('');
+    if (selectedNeighbor.id.startsWith('nb-')) {
+      const sentMsg = { ...newMsg, status: 'sent' as const };
+      _setChatMessages(prev => {
+        const list = prev[selectedNeighbor.id] || [];
+        const idx = list.findIndex(m => m.id === msgId);
+        if (idx === -1) return prev;
+        const copy = [...list]; copy[idx] = sentMsg;
+        return { ...prev, [selectedNeighbor.id]: copy };
+      });
+      setTimeout(() => triggerSimulatedResponse(selectedNeighbor.id, resolvedType === 'text' ? inputContent : '[Snap photo sent]', customImage), 1050);
+    }
   };
 
   const handleReaction = async (msg: DirectMessage, emoji: string) => {
@@ -5708,84 +5698,50 @@ export function useNearbyController() {
     const senderId = reqId;
     const receiverId = currentUser.uid;
     const reqDocId = `${senderId}_${receiverId}`;
-
-    // Update local React states immediately for real-time responsiveness o!
-    setFriendIds(prev => {
-      if (!prev.includes(senderId)) {
-        return [...prev, senderId];
+    try {
+      const requestSnap = await getDoc(doc(db, 'friend_requests', reqDocId));
+      const reverseRequestSnap = await getDoc(doc(db, 'friend_requests', `${receiverId}_${senderId}`));
+      if (!requestSnap.exists() || requestSnap.data()?.status !== 'pending') {
+        setAudioFeedback('This friend request is no longer available.');
+        setTimeout(() => setAudioFeedback(''), 2500);
+        return;
       }
-      return prev;
-    });
-    setNeighbors(prev => prev.map(n => {
-      if (n.id === senderId) {
-        return {
-          ...n,
-          isFriend: true,
-          friendIds: [...(Array.isArray(n.friendIds) ? n.friendIds : []), receiverId]
-        };
+      const { writeBatch: nativeWriteBatch, doc: nativeDoc } = await import('firebase/firestore');
+      const batch = nativeWriteBatch(db);
+      batch.set(nativeDoc(db, 'users', receiverId), { friendIds: arrayUnion(senderId) }, { merge: true });
+      batch.set(nativeDoc(db, 'users', senderId), { friendIds: arrayUnion(receiverId) }, { merge: true });
+      batch.delete(nativeDoc(db, 'friend_requests', reqDocId));
+      if (reverseRequestSnap.exists()) {
+        batch.delete(nativeDoc(db, 'friend_requests', `${receiverId}_${senderId}`));
       }
-      return n;
-    }));
-    setPendingFriendRequests(prev => prev.filter(id => id !== senderId));
-    setSentFriendRequestIds(prev => prev.filter(id => id !== senderId));
-    if (viewingNeighborProfile && viewingNeighborProfile.id === senderId) {
-      setViewingNeighborProfile(prev => prev ? {
-        ...prev,
-        isFriend: true,
-        friendIds: [...(Array.isArray(prev.friendIds) ? prev.friendIds : []), receiverId]
-      } : null);
-    }
+      await batch.commit();
 
-    triggerBeep(650, 0.1);
-    const requester = neighbors.find(n => n.id === senderId);
-    setAudioFeedback(`🎉 Added ${requester ? requester.name : 'Neighbor'} as Friend!`);
-    setTimeout(() => setAudioFeedback(""), 2200);
+      setFriendIds(prev => prev.includes(senderId) ? prev : [...prev, senderId]);
+      setPendingFriendRequests(prev => prev.filter(id => id !== senderId));
+      setSentFriendRequestIds(prev => prev.filter(id => id !== senderId));
+      setNeighbors(prev => prev.map(n => n.id === senderId ? {
+        ...n, isFriend: true, friendIds: Array.from(new Set([...(Array.isArray(n.friendIds) ? n.friendIds : []), receiverId]))
+      } : n));
+      if (viewingNeighborProfile?.id === senderId) {
+        setViewingNeighborProfile(prev => prev ? { ...prev, isFriend: true } : null);
+      }
 
-    // Perform Firestore updates safely in background try-catch blocks
-    try {
-      const userDocRef = doc(db, 'users', receiverId);
-      // setDoc(..., {merge:true}) instead of updateDoc: updateDoc THROWS "no document to
-      // update" if the target doc doesn't exist for any reason, which would silently abort
-      // this whole step with zero feedback. merge:true creates the doc if missing and just
-      // updates the field otherwise - strictly safer for a cross-account write like this.
-      await setDoc(userDocRef, { friendIds: arrayUnion(senderId) }, { merge: true });
-    } catch (e) {
-      console.error("Firestore user sync friend union failed:", e);
-      handleFirestoreError(e, OperationType.UPDATE, `users/${receiverId}`);
-      const errMsg = e instanceof Error ? e.message : String(e);
-      setAudioFeedback(`⚠️ Friend sync failed on your side: ${errMsg}`);
-      setTimeout(() => setAudioFeedback(""), 6000);
-    }
-
-    try {
-      const senderDocRef = doc(db, 'users', senderId);
-      await setDoc(senderDocRef, { friendIds: arrayUnion(receiverId) }, { merge: true });
-    } catch (e) {
-      console.error("Firestore sender sync friend union failed:", e);
-      handleFirestoreError(e, OperationType.UPDATE, `users/${senderId}`);
-      const errMsg = e instanceof Error ? e.message : String(e);
-      setAudioFeedback(`⚠️ Friend sync failed on their side: ${errMsg}`);
-      setTimeout(() => setAudioFeedback(""), 6000);
-    }
-
-    try {
-      await deleteDoc(doc(db, 'friend_requests', reqDocId));
-      await deleteDoc(doc(db, 'friend_requests', `${receiverId}_${senderId}`));
-    } catch (e) {
-      console.warn("Firestore friend_requests cleanup failed, continuing in offline/mock mode o!:", e);
-    }
-
-    try {
-      await createNotification({
-        userId: senderId,
-        senderId: receiverId,
-        senderName: currentUser.name || 'A neighbor',
-        type: 'friend_request',
-        title: 'Friend Request Accepted',
-        message: `${currentUser.name || 'A neighbor'} accepted your friend request!`
-      });
-    } catch (notifErr) {
-      console.warn("Failed to create friend request acceptance notification:", notifErr);
+      try {
+        await createNotification({
+          userId: senderId, senderId: receiverId,
+          senderName: currentUser.displayName || currentUser.email?.split('@')[0] || 'A neighbor',
+          type: 'friend_request', title: 'Friend Request Accepted',
+          message: `${currentUser.displayName || currentUser.email?.split('@')[0] || 'A neighbor'} accepted your friend request!`
+        });
+      } catch (_) {}
+      triggerBeep(650, 0.1);
+      const requester = neighbors.find(n => n.id === senderId);
+      setAudioFeedback(`🎉 Added ${requester ? requester.name : 'Neighbor'} as Friend!`);
+      setTimeout(() => setAudioFeedback(''), 2200);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `accept_friend/${reqDocId}`);
+      setAudioFeedback('⚠️ Could not accept the friend request. Please try again.');
+      setTimeout(() => setAudioFeedback(''), 3500);
     }
   }, [currentUser, neighbors, viewingNeighborProfile, triggerBeep]);
 
