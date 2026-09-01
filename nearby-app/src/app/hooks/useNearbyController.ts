@@ -3011,6 +3011,52 @@ export function useNearbyController() {
     };
   }, [currentUser]);
 
+  // Finalize friend requests the OTHER person accepted. handleAcceptFriendRequest
+  // never writes to the sender's own users/{uid} doc anymore (see the long comment
+  // there) - it just flips this request's status to 'accepted'. This effect is what
+  // completes the sync on the sender's own device: adding the new friend to your OWN
+  // friendIds is always a same-user write, so it can never be blocked by the rules
+  // the way the old cross-account write could. Runs automatically whenever this
+  // client is online and listening, including on next login if it wasn't at the time.
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const acceptedQuery = query(
+      collection(db, 'friend_requests'),
+      where('senderId', '==', currentUser.uid),
+      where('status', '==', 'accepted')
+    );
+
+    const unsubAccepted = onSnapshot(acceptedQuery, async (snapshot) => {
+      for (const acceptedDoc of snapshot.docs) {
+        const data = acceptedDoc.data();
+        const receiverId = data.receiverId;
+        if (!receiverId) continue;
+
+        try {
+          await setDoc(doc(db, 'users', currentUser.uid), { friendIds: arrayUnion(receiverId) }, { merge: true });
+        } catch (e) {
+          console.error("Firestore sender-side friend finalize failed:", e);
+          handleFirestoreError(e, OperationType.UPDATE, `users/${currentUser.uid}`);
+          // Leave the request doc in place so this retries on the next snapshot/login
+          // instead of silently disappearing while still half-synced.
+          continue;
+        }
+
+        try {
+          await deleteDoc(doc(db, 'friend_requests', `${currentUser.uid}_${receiverId}`));
+          await deleteDoc(doc(db, 'friend_requests', `${receiverId}_${currentUser.uid}`));
+        } catch (e) {
+          console.warn("Firestore friend_requests cleanup after finalize failed:", e);
+        }
+      }
+    }, (err) => {
+      handleFirestoreError(err, OperationType.GET, 'friend_requests_accepted');
+    });
+
+    return () => unsubAccepted();
+  }, [currentUser]);
+
   // Debounced effect for auto-persisting settings and note updates to Firebase
   useEffect(() => {
     const fUser = auth.currentUser;
@@ -5796,13 +5842,29 @@ export function useNearbyController() {
     setAudioFeedback(`🎉 Added ${requester ? requester.name : 'Neighbor'} as Friend!`);
     setTimeout(() => setAudioFeedback(""), 2200);
 
-    // Perform Firestore updates safely in background try-catch blocks
+    // Perform Firestore updates safely in background try-catch blocks.
+    //
+    // IMPORTANT: this function only ever writes to the ACCEPTING user's OWN
+    // `users/{receiverId}` document now - never to the sender's. Writing to
+    // someone else's user doc cross-account (the old code did this to add
+    // yourself to *their* friendIds) depends on a fragile rules condition
+    // (validFriendIdsAdd) and, worse, if that other user's `users/{uid}` doc
+    // doesn't exist yet for any reason, Firestore treats the write as a
+    // *create* rather than an *update* - and the create rule only allows
+    // `isOwner`, so it is unconditionally denied no matter what the update
+    // rule says. That silent, one-sided failure is exactly what produces
+    // "Friends" on one account and "Pending approval" on the other forever,
+    // with no way to recover.
+    //
+    // Instead: mark the request 'accepted' (still just an update to a doc
+    // both sender and receiver are already allowed to touch), and let the
+    // ORIGINAL SENDER's own client add the receiver to *their own* friendIds
+    // the next time it's listening (see the friend_requests "accepted" sync
+    // effect below). Every friendIds write is now a same-user write, so it
+    // always passes `isOwner` - there is no longer any cross-account write
+    // for the rules to reject.
     try {
       const userDocRef = doc(db, 'users', receiverId);
-      // setDoc(..., {merge:true}) instead of updateDoc: updateDoc THROWS "no document to
-      // update" if the target doc doesn't exist for any reason, which would silently abort
-      // this whole step with zero feedback. merge:true creates the doc if missing and just
-      // updates the field otherwise - strictly safer for a cross-account write like this.
       await setDoc(userDocRef, { friendIds: arrayUnion(senderId) }, { merge: true });
     } catch (e) {
       console.error("Firestore user sync friend union failed:", e);
@@ -5813,21 +5875,16 @@ export function useNearbyController() {
     }
 
     try {
-      const senderDocRef = doc(db, 'users', senderId);
-      await setDoc(senderDocRef, { friendIds: arrayUnion(receiverId) }, { merge: true });
+      // Don't delete the request here - leave it as 'accepted' so the
+      // sender's own client can pick it up and finish their side of the
+      // sync (see the effect below), then delete it once THEIR write
+      // actually succeeds. Deleting it immediately here, before we know
+      // the sender's side ever completed, is what let the old flow silently
+      // strand people in a half-friended state with no record left to retry.
+      await setDoc(doc(db, 'friend_requests', reqDocId), { status: 'accepted' }, { merge: true });
     } catch (e) {
-      console.error("Firestore sender sync friend union failed:", e);
-      handleFirestoreError(e, OperationType.UPDATE, `users/${senderId}`);
-      const errMsg = e instanceof Error ? e.message : String(e);
-      setAudioFeedback(`⚠️ Friend sync failed on their side: ${errMsg}`);
-      setTimeout(() => setAudioFeedback(""), 6000);
-    }
-
-    try {
-      await deleteDoc(doc(db, 'friend_requests', reqDocId));
-      await deleteDoc(doc(db, 'friend_requests', `${receiverId}_${senderId}`));
-    } catch (e) {
-      console.warn("Firestore friend_requests cleanup failed, continuing in offline/mock mode o!:", e);
+      console.warn("Firestore friend_requests accept-status write failed:", e);
+      handleFirestoreError(e, OperationType.UPDATE, `friend_requests/${reqDocId}`);
     }
 
     try {
