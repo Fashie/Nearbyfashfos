@@ -6,7 +6,6 @@ import {
   onAuthStateChanged as fOnAuthStateChanged,
   signOut as fSignOut,
   signInWithPopup as fSignInWithPopup,
-  signInWithRedirect as fSignInWithRedirect,
   signInWithEmailAndPassword as fSignInWithEmailAndPassword,
   createUserWithEmailAndPassword as fCreateUserWithEmailAndPassword,
   GoogleAuthProvider
@@ -767,13 +766,6 @@ export async function signInWithPopup(authInstance: any, provider: any) {
     }
     throw err;
   }
-}
-
-// Redirect is more reliable than popup on mobile Safari and in browsers that block
-// third-party popup windows/cookies. The auth state listener handles the result after
-// Firebase returns to the app.
-export async function signInWithRedirect(authInstance: any, provider: any) {
-  return fSignInWithRedirect(auth, provider);
 }
 
 export async function signInWithEmailAndPassword(authInstance: any, email: string, pass: string) {
