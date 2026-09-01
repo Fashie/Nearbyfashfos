@@ -23,12 +23,20 @@ service cloud.firestore {
     }
 
     function validFriendIdsAdd(targetUserId) {
+      // Don't assert an exact +1 size delta - arrayUnion is idempotent, so if this
+      // pair's friendIds ever partially synced before (a prior accept/unfriend that
+      // failed halfway), the array may already contain the caller's uid and a strict
+      // size+1 check would wrongly deny an otherwise-correct, harmless write. Instead
+      // assert the actual invariant: nothing removed, and the only possible addition
+      // is the caller's own uid - true whether or not it was already present.
+      let oldIds = resource.data.get('friendIds', []);
+      let newIds = request.resource.data.get('friendIds', []);
       return signedIn()
         && targetUserId != request.auth.uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friendIds'])
-        && request.resource.data.get('friendIds', []).size() == resource.data.get('friendIds', []).size() + 1
-        && request.resource.data.get('friendIds', []).hasAll(resource.data.get('friendIds', []))
-        && request.auth.uid in request.resource.data.get('friendIds', [])
+        && newIds.hasAll(oldIds)
+        && newIds.hasOnly(oldIds.concat([request.auth.uid]))
+        && request.auth.uid in newIds
         && exists(/databases/$(database)/documents/friend_requests/$(targetUserId + '_' + request.auth.uid))
         && get(/databases/$(database)/documents/friend_requests/$(targetUserId + '_' + request.auth.uid)).data.get('senderId', '') == targetUserId
         && get(/databases/$(database)/documents/friend_requests/$(targetUserId + '_' + request.auth.uid)).data.get('receiverId', '') == request.auth.uid
@@ -36,12 +44,17 @@ service cloud.firestore {
     }
 
     function validFriendIdsRemove() {
+      // Same idempotency issue as validFriendIdsAdd, mirrored for removal: assert
+      // set semantics (nothing added, at most the caller's own uid removed) instead
+      // of an exact -1 size delta, so an already-partially-unfriended pair doesn't
+      // get stuck unable to finish unfriending.
+      let oldIds = resource.data.get('friendIds', []);
+      let newIds = request.resource.data.get('friendIds', []);
       return signedIn()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friendIds'])
-        && resource.data.get('friendIds', []).size() == request.resource.data.get('friendIds', []).size() + 1
-        && resource.data.get('friendIds', []).hasAll(request.resource.data.get('friendIds', []))
-        && request.auth.uid in resource.data.get('friendIds', [])
-        && !(request.auth.uid in request.resource.data.get('friendIds', []));
+        && oldIds.hasAll(newIds)
+        && oldIds.hasOnly(newIds.concat([request.auth.uid]))
+        && !(request.auth.uid in newIds);
     }
 
     match /users/{userId} {
