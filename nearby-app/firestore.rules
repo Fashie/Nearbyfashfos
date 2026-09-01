@@ -29,10 +29,10 @@ service cloud.firestore {
         && request.resource.data.get('friendIds', []).size() == resource.data.get('friendIds', []).size() + 1
         && request.resource.data.get('friendIds', []).hasAll(resource.data.get('friendIds', []))
         && request.auth.uid in request.resource.data.get('friendIds', [])
-        && exists(/databases/$(database)/documents/friend_requests/$(targetUserId)_$(request.auth.uid))
-        && get(/databases/$(database)/documents/friend_requests/$(targetUserId)_$(request.auth.uid)).data.get('senderId', '') == targetUserId
-        && get(/databases/$(database)/documents/friend_requests/$(targetUserId)_$(request.auth.uid)).data.get('receiverId', '') == request.auth.uid
-        && get(/databases/$(database)/documents/friend_requests/$(targetUserId)_$(request.auth.uid)).data.get('status', '') == 'pending';
+        && exists(/databases/$(database)/documents/friend_requests/$(targetUserId + '_' + request.auth.uid))
+        && get(/databases/$(database)/documents/friend_requests/$(targetUserId + '_' + request.auth.uid)).data.get('senderId', '') == targetUserId
+        && get(/databases/$(database)/documents/friend_requests/$(targetUserId + '_' + request.auth.uid)).data.get('receiverId', '') == request.auth.uid
+        && get(/databases/$(database)/documents/friend_requests/$(targetUserId + '_' + request.auth.uid)).data.get('status', '') == 'pending';
     }
 
     function validFriendIdsRemove() {
