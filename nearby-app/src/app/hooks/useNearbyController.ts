@@ -3266,13 +3266,6 @@ export function useNearbyController() {
         // from your neighbors/chat list the moment their live distance reads outside your
         // radius, even mid-conversation.
         const hasExistingChat = (chatMessagesRef.current[u.uid]?.length ?? 0) > 0;
-        // Friends and anyone with existing message history must survive every
-        // proximity/staleness/coordinate gate below - none of those are relevant
-        // once a conversation exists, and this is what actually keeps them in
-        // `neighbors` (the comment above this used to describe this intent but
-        // nothing enforced it, so accepted friends vanished the moment their
-        // live GPS read outside radarRadius).
-        const isChatEligible = isUserFriend || hasExistingChat;
 
         // 1. Radar Mode verification: Show only users who have Radar Mode turned ON o!
         const isRadarEnabled = u.isUserVisibleOnRadar !== false;
@@ -3288,44 +3281,32 @@ export function useNearbyController() {
         // or from a demo distance value.
         const hasRealCoordinates = typeof u.latitude === 'number' && Number.isFinite(u.latitude)
           && typeof u.longitude === 'number' && Number.isFinite(u.longitude);
-        if (!hasRealCoordinates && !isChatEligible) return;
+        if (!hasRealCoordinates) return;
 
         const activeCoords = userCoords;
-        const haveActiveCoords = !!activeCoords && Number.isFinite(activeCoords.lat) && Number.isFinite(activeCoords.lng);
-        if (!haveActiveCoords && !isChatEligible) return;
+        if (!activeCoords || !Number.isFinite(activeCoords.lat) || !Number.isFinite(activeCoords.lng)) return;
 
         const locationUpdatedAt = u.locationUpdatedAt || null;
         const locationAgeMs = locationUpdatedAt ? Date.now() - new Date(locationUpdatedAt).getTime() : Infinity;
         // Don't use stale locations for live nearby discovery. Existing friends/chats
         // can still be kept elsewhere in the chat UI, but stale coordinates must not
         // make someone appear physically nearby.
-        const isStale = !Number.isFinite(locationAgeMs) || locationAgeMs > 5 * 60 * 1000;
-        if (isStale && !isChatEligible) return;
+        if (!Number.isFinite(locationAgeMs) || locationAgeMs > 5 * 60 * 1000) return;
 
-        // Only compute a real distance when we actually have both sides' coordinates
-        // and the location isn't stale - otherwise (a chat-eligible friend with no
-        // usable GPS right now) fall back to "unknown/far" rather than crunching NaN
-        // out of missing lat/lng.
-        const canComputeDistance = hasRealCoordinates && haveActiveCoords && !isStale;
-        let distanceMeters = canComputeDistance
-          ? Math.round(calculateHaversineDistance(activeCoords!.lat, activeCoords!.lng, u.latitude, u.longitude))
-          : Infinity;
-        let latOffset = canComputeDistance ? (u.latitude - activeCoords!.lat) * 12 : 0;
-        let lngOffset = canComputeDistance ? (u.longitude - activeCoords!.lng) * 12 : 0;
+        let distanceMeters = Math.round(calculateHaversineDistance(activeCoords.lat, activeCoords.lng, u.latitude, u.longitude));
+        let latOffset = (u.latitude - activeCoords.lat) * 12;
+        let lngOffset = (u.longitude - activeCoords.lng) * 12;
         latOffset = Math.max(-0.45, Math.min(0.45, latOffset));
         lngOffset = Math.max(-0.45, Math.min(0.45, lngOffset));
 
-        // 3. Proximity Filter: only genuine coordinates inside the user's radius -
-        // unless this is a friend or an existing conversation, which always stays.
-        const isWithinRadius = Number.isFinite(distanceMeters) && distanceMeters <= radarRadius;
-        if (!isWithinRadius && !isChatEligible) return;
+        // 3. Proximity Filter: only genuine coordinates inside the user's radius.
+        const isWithinRadius = distanceMeters <= radarRadius;
+        if (!isWithinRadius) return;
         
         // Ignore banned users
         if (u.banned === true || (u.reportsCount !== undefined && u.reportsCount >= 10)) return;
         
-        // Only meaningful when we actually have a distance - avoids "Infinity mins
-        // trek" for a chat-eligible friend whose location is unknown/stale.
-        let walkingMins = Number.isFinite(distanceMeters) ? Math.max(1, Math.ceil(distanceMeters / 78)) : 0;
+        let walkingMins = Math.max(1, Math.ceil(distanceMeters / 78));
         
         realUsers.push({
           id: u.uid,
@@ -6543,7 +6524,7 @@ export function useNearbyController() {
       // threads from the Chats tab - the messages were still safely in Firestore, they
       // just never rendered, which looked exactly like "replies aren't coming through".
       const hasExistingChat = (chatMessages[nb.id]?.length ?? 0) > 0;
-      const isWithinRadius = nb.id === 'nb-myai' || nb.distanceMeters <= radarRadius || hasExistingChat || nb.isFriend;
+      const isWithinRadius = nb.id === 'nb-myai' || nb.distanceMeters <= radarRadius || hasExistingChat;
       const matchesSearch = nb.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
                             nb.username.toLowerCase().includes(searchQuery.toLowerCase());
       return isWithinRadius && matchesSearch;
