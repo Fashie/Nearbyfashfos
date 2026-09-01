@@ -115,7 +115,11 @@ import {
 import {
   User as FirebaseUser,
   sendPasswordResetEmail,
-  sendEmailVerification
+  sendEmailVerification,
+  getRedirectResult,
+  signInWithRedirect,
+  setPersistence,
+  browserLocalPersistence
 } from 'firebase/auth';
 
 
@@ -310,6 +314,8 @@ export function useNearbyController() {
             lngOffset: 0,
             streetName: exactPlace,
             appLanguage: finalState,
+            locationUpdatedAt: nowIso,
+            locationSource: 'gps',
             updatedAt: nowIso
           }, { merge: true });
 
@@ -385,18 +391,21 @@ export function useNearbyController() {
         lastUpdated: nowIso
       }, { merge: true });
 
-      // Immediate manual update to liveLocations document for consistency o!
-      await setDoc(doc(db, 'liveLocations', currentUserId), {
-        uid: currentUserId,
-        latitude: userCoords?.lat || 7.7715,
-        longitude: userCoords?.lng || 4.5630,
-        accuracy: null,
-        heading: null,
-        speed: null,
-        updatedAt: nowIso,
-        visibility: mode,
-        radarEnabled: enabled
-      }, { merge: true });
+      // Never invent a location when the device has not supplied GPS. A fake
+      // coordinate can make a user in another city appear nearby.
+      if (userCoords && Number.isFinite(userCoords.lat) && Number.isFinite(userCoords.lng)) {
+        await setDoc(doc(db, 'liveLocations', currentUserId), {
+          uid: currentUserId,
+          latitude: userCoords.lat,
+          longitude: userCoords.lng,
+          accuracy: null,
+          heading: null,
+          speed: null,
+          updatedAt: nowIso,
+          visibility: mode,
+          radarEnabled: enabled
+        }, { merge: true });
+      }
 
       await setDoc(doc(db, 'visibilitySettings', currentUserId), {
         userId: currentUserId,
@@ -420,7 +429,7 @@ export function useNearbyController() {
   const [selectedNeighborState, setSelectedNeighbor] = useState<Neighbor | null>(null); // For active chat thread
 
   // Load real presence in real-time o!
-  const [presenceMap, setPresenceMap] = useState<Record<string, { online: boolean, typing: string, lastSeen: string, currentConversation: string }>>({});
+  const [presenceMap, setPresenceMap] = useState<Record<string, { online: boolean, status: 'active' | 'away' | 'offline', typing: string, lastSeen: string, currentConversation: string }>>({});
 
   const syncedNeighbors = useMemo(() => {
     return neighbors.map(nb => {
@@ -428,7 +437,7 @@ export function useNearbyController() {
       if (pData) {
         return {
           ...nb,
-          onlineStatus: pData.online ? 'active' : 'offline',
+          onlineStatus: pData.status || (pData.online ? 'active' : 'offline'),
           typingTo: pData.typing,
           lastSeen: pData.lastSeen
         };
@@ -969,12 +978,13 @@ export function useNearbyController() {
     if (!currentUser) return;
     const presenceColRef = collection(db, 'presence');
     const unsubPresence = onSnapshot(presenceColRef, (snapshot) => {
-      const pm: Record<string, { online: boolean, typing: string, lastSeen: string, currentConversation: string }> = {};
+      const pm: Record<string, { online: boolean, status: 'active' | 'away' | 'offline', typing: string, lastSeen: string, currentConversation: string }> = {};
       snapshot.forEach(docSnap => {
         const data = docSnap.data();
         if (data && data.uid) {
           pm[data.uid] = {
             online: data.online ?? false,
+            status: (data.status === 'active' || data.status === 'away' || data.status === 'offline') ? data.status : (data.online ? 'active' : 'offline'),
             typing: data.typing ?? "",
             lastSeen: data.lastSeen ?? "",
             currentConversation: data.currentConversation ?? ""
@@ -1522,18 +1532,41 @@ export function useNearbyController() {
 
   const loginWithGoogle = async () => {
     const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
     setAuthError('');
     setAuthLoading(true);
     try {
       triggerBeep(580, 0.1);
+      // Make persistence explicit before opening the OAuth flow. This prevents a
+      // successful Google credential from disappearing when the OAuth window/tab
+      // hands control back to the app on mobile Safari.
+      await setPersistence(auth, browserLocalPersistence);
       const result = await signInWithPopup(auth, provider);
+      if (result?.user) {
+        setCurrentUser(result.user);
+        localStorage.setItem('nearby_current_uid', result.user.uid);
+        setShowLandingMode(false);
+      }
       setAudioFeedback("Signed in with Google.");
       setTimeout(() => setAudioFeedback(""), 2200);
     } catch (err: any) {
       console.error("Login failure: ", err);
+      const code = err?.code || '';
+      if (code === 'auth/popup-blocked' || code === 'auth/popup-closed-by-user' || code === 'auth/network-request-failed') {
+        try {
+          // Mobile browsers can complete Google OAuth more reliably with a full-page
+          // redirect. The result is consumed on app startup by the effect below.
+          localStorage.setItem('nearby_google_redirect_pending', '1');
+          await signInWithRedirect(auth, provider);
+          return;
+        } catch (redirectErr: any) {
+          err = redirectErr;
+        }
+      }
+
       let errorMsg = err.message || "Failed to sign in with Google.";
       if (err.code === 'auth/unauthorized-domain' || (err.message && err.message.includes('unauthorized-domain'))) {
-        errorMsg = `🔐 Firebase Domain Unauthorized!\n\nPlease add this dynamic preview domain ("${window.location.hostname}") to the "Authorized domains" list in your Firebase Console under: Authentication -> Settings -> Authorized domains. This will authorize Google Sign-In securely o!`;
+        errorMsg = `🔐 Firebase Domain Unauthorized!\n\nPlease add this domain ("${window.location.hostname}") to Firebase Console → Authentication → Settings → Authorized domains.`;
       }
       setAuthError(errorMsg);
       setAuthLoading(false);
@@ -1642,10 +1675,12 @@ export function useNearbyController() {
         userGroupCallPolicy: userGroupCallPolicy,
         myNoteText: myNoteText,
         customProfilePhoto: onboardingPhoto,
-        appLanguage: onboardingState || 'Lagos',
-        streetName: onboardingStreetName || 'Yaba',
-        latitude: onboardingCoords ? onboardingCoords.lat : 6.5095,
-        longitude: onboardingCoords ? onboardingCoords.lng : 3.3711,
+        appLanguage: onboardingCoords ? (onboardingState || 'Unknown') : 'Unknown',
+        streetName: onboardingCoords ? (onboardingStreetName || 'Location not set') : 'Location not set',
+        latitude: onboardingCoords ? onboardingCoords.lat : null,
+        longitude: onboardingCoords ? onboardingCoords.lng : null,
+        locationUpdatedAt: onboardingCoords ? new Date().toISOString() : null,
+        locationSource: onboardingCoords ? 'gps' : 'none',
         latOffset: 0,
         lngOffset: 0,
         ageRange: onboardingAgeRange,
@@ -1773,6 +1808,34 @@ export function useNearbyController() {
   useEffect(() => {
     loadLocalAccountsFromDisk();
   }, [currentUser]);
+
+  // Complete Google redirect sign-in when the browser returns from Google.
+  // Without getRedirectResult(), a successful redirect can land back on the app
+  // while the UI still thinks the user is signed out. Firebase documents that the
+  // redirect result must be consumed after returning to the app.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        await setPersistence(auth, browserLocalPersistence);
+        const result = await getRedirectResult(auth);
+        if (!cancelled && result?.user) {
+          localStorage.removeItem('nearby_google_redirect_pending');
+          localStorage.setItem('nearby_current_uid', result.user.uid);
+          setCurrentUser(result.user);
+          setShowLandingMode(false);
+        }
+      } catch (err: any) {
+        console.error('Google redirect completion failed:', err);
+        if (!cancelled) {
+          localStorage.removeItem('nearby_google_redirect_pending');
+          setAuthError(err?.message || 'Google sign-in could not be completed.');
+          setAuthLoading(false);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -1951,10 +2014,12 @@ export function useNearbyController() {
               userGroupCallPolicy: "ask",
               myNoteText: "",
               customProfilePhoto: user.photoURL || null,
-              appLanguage: "Lagos",
-              streetName: "Yaba",
-              latitude: 6.5095,
-              longitude: 3.3711,
+              appLanguage: "Unknown",
+              streetName: "Location not set",
+              latitude: null,
+              longitude: null,
+              locationUpdatedAt: null,
+              locationSource: "none",
               latOffset: 0,
               lngOffset: 0,
               ageRange: "25-34",
@@ -2088,78 +2153,57 @@ export function useNearbyController() {
   }, []);
 
   // -----------------------------------------
-  // WhatsApp Presence Heartbeat System o!
+  // Real-time Presence Heartbeat
   // -----------------------------------------
   useEffect(() => {
     if (!currentUser || showOnboarding) return;
-    const userDocRef = doc(db, 'users', currentUser.uid);
-    const presenceDocRef = doc(db, 'presence', currentUser.uid);
 
+    const presenceDocRef = doc(db, 'presence', currentUser.uid);
     let lastActivityTime = Date.now();
     let currentStatus: 'active' | 'away' | 'offline' = 'active';
 
-    const updatePresence = async (status: 'active' | 'away' | 'offline') => {
+    const writePresence = async (status: 'active' | 'away' | 'offline') => {
       currentStatus = status;
-      const nowIso = new Date().toISOString();
       try {
-        await setDoc(userDocRef, {
-          onlineStatus: status,
-          lastSeen: nowIso
-        }, { merge: true });
-
         await setDoc(presenceDocRef, {
           uid: currentUser.uid,
           online: status === 'active',
-          lastSeen: nowIso,
-          currentConversation: selectedNeighborId || "",
-          updatedAt: nowIso
+          status,
+          lastSeen: new Date().toISOString(),
+          currentConversation: selectedNeighborId || '',
+          updatedAt: new Date().toISOString()
         }, { merge: true });
       } catch (e) {
-        // quota exceeded fallback o!
+        console.warn('Presence write failed:', e);
       }
     };
 
-    updatePresence('active');
-
-    // User activity listener to dynamically detect activity o!
     const handleActivity = () => {
-      const now = Date.now();
-      lastActivityTime = now;
+      lastActivityTime = Date.now();
+      if (currentStatus !== 'active') void writePresence('active');
+    };
 
-      // If they were away, restore instantly and notify database
-      if (currentStatus === 'away') {
-        updatePresence('active');
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        lastActivityTime = Date.now();
+        void writePresence('active');
+      } else {
+        void writePresence('away');
       }
     };
 
+    void writePresence('active');
     window.addEventListener('mousemove', handleActivity);
     window.addEventListener('keydown', handleActivity);
     window.addEventListener('click', handleActivity);
     window.addEventListener('scroll', handleActivity);
     window.addEventListener('touchstart', handleActivity);
+    document.addEventListener('visibilitychange', handleVisibility);
 
-    // Periodically update heartbeat and verify if user has gone idle (10-min limit o!)
-    const interval = setInterval(() => {
+    const interval = window.setInterval(() => {
       const idleMs = Date.now() - lastActivityTime;
-      if (idleMs >= 10 * 60 * 1000) { // 10 minutes of inactivity
-        if (currentStatus !== 'away') {
-          updatePresence('away');
-        }
-      } else {
-        if (currentStatus !== 'active') {
-          updatePresence('active');
-        } else {
-          updatePresence('active'); // keep heartbeat live
-        }
-      }
-    }, 40000);
-
-    const handleUnload = () => {
-      if (navigator.sendBeacon) {
-        updatePresence('offline');
-      }
-    };
-    window.addEventListener('beforeunload', handleUnload);
+      void writePresence(idleMs >= 2 * 60 * 1000 ? 'away' : 'active');
+    }, 20000);
 
     return () => {
       clearInterval(interval);
@@ -2168,10 +2212,10 @@ export function useNearbyController() {
       window.removeEventListener('click', handleActivity);
       window.removeEventListener('scroll', handleActivity);
       window.removeEventListener('touchstart', handleActivity);
-      window.removeEventListener('beforeunload', handleUnload);
-      updatePresence('offline');
+      document.removeEventListener('visibilitychange', handleVisibility);
+      void writePresence('offline');
     };
-  }, [currentUser, showOnboarding, selectedNeighborId]);
+  }, [currentUser?.uid, showOnboarding, selectedNeighborId]);
 
   // Real-time Discover Hub and Chat Activity Notifications o!
   useEffect(() => {
@@ -2271,30 +2315,35 @@ export function useNearbyController() {
   }, [chatMessages, selectedNeighborId]);
 
   // -----------------------------------------
-  // Debounced Typing Status to Firestore o!
+  // Real-time Typing Status
   // -----------------------------------------
   useEffect(() => {
-    if (!currentUser || !selectedNeighborId || selectedNeighbor?.isGroup) return;
+    if (!currentUser) return;
 
-    const isTyping = textInput.trim().length > 0;
-    const userDocRef = doc(db, 'users', currentUser.uid);
     const presenceDocRef = doc(db, 'presence', currentUser.uid);
+    const typingTarget = selectedNeighborId && !selectedNeighbor?.isGroup && textInput.trim()
+      ? selectedNeighborId
+      : '';
 
-    const delayDebounceFn = setTimeout(() => {
-      const typingTarget = isTyping ? selectedNeighborId : "";
-      
-      setDoc(userDocRef, {
-        typingTo: typingTarget
-      }, { merge: true }).catch(() => {});
-
+    const timer = window.setTimeout(() => {
       setDoc(presenceDocRef, {
+        uid: currentUser.uid,
         typing: typingTarget,
         updatedAt: new Date().toISOString()
-      }, { merge: true }).catch(() => {});
-    }, 450);
+      }, { merge: true }).catch((err) => {
+        console.warn('Typing presence write failed:', err);
+      });
+    }, 250);
 
-    return () => clearTimeout(delayDebounceFn);
-  }, [textInput, selectedNeighborId, selectedNeighbor?.isGroup, currentUser]);
+    return () => {
+      clearTimeout(timer);
+      // When changing chats, closing chat, or clearing the input, immediately
+      // remove the previous target instead of leaving a stale "typing" flag.
+      if (!typingTarget) {
+        setDoc(presenceDocRef, { typing: '', updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
+      }
+    };
+  }, [textInput, selectedNeighborId, selectedNeighbor?.isGroup, currentUser?.uid]);
 
   // -----------------------------------------
   // Core WhatsApp Synced Persistence Helpers o!
@@ -3168,9 +3217,9 @@ export function useNearbyController() {
         }
         
         // Restore user coordinates from their profile document on launch o!
-        if (data.latitude !== undefined && data.longitude !== undefined) {
-          const lat = parseFloat(data.latitude);
-          const lng = parseFloat(data.longitude);
+        if (typeof data.latitude === 'number' && typeof data.longitude === 'number' && Number.isFinite(data.latitude) && Number.isFinite(data.longitude)) {
+          const lat = data.latitude;
+          const lng = data.longitude;
           if (!isNaN(lat) && !isNaN(lng)) {
             setUserCoords(prev => {
               if (!prev) {
@@ -3217,7 +3266,6 @@ export function useNearbyController() {
         // from your neighbors/chat list the moment their live distance reads outside your
         // radius, even mid-conversation.
         const hasExistingChat = (chatMessagesRef.current[u.uid]?.length ?? 0) > 0;
-        const keepRegardlessOfRadius = hasRelationship || hasExistingChat;
 
         // 1. Radar Mode verification: Show only users who have Radar Mode turned ON o!
         const isRadarEnabled = u.isUserVisibleOnRadar !== false;
@@ -3228,25 +3276,32 @@ export function useNearbyController() {
         if (uVisibilityMode === 'hidden' && !hasRelationship) return;
         if (uVisibilityMode === 'friends' && !isUserFriend && !isFriendRequester && !isFriendRequested) return;
 
-        let latOffset = u.latOffset !== undefined ? u.latOffset : (((u.uid.charCodeAt(0) || 0) % 10) - 5) * 0.05;
-        let lngOffset = u.lngOffset !== undefined ? u.lngOffset : (((u.uid.charCodeAt(1) || 0) % 10) - 5) * 0.05;
-        let distanceMeters = u.distanceMeters !== undefined ? u.distanceMeters : (((u.uid.charCodeAt(2) || 0) % 4) + 1) * 85 + 40;
-        
-        const activeCoords = userCoords || selectedPreset.coords;
-        if (activeCoords && u.latitude !== undefined && u.longitude !== undefined) {
-          distanceMeters = Math.max(8, Math.round(calculateHaversineDistance(activeCoords.lat, activeCoords.lng, u.latitude, u.longitude)));
-          
-          // Render precise spatial offset relative to active explorer epicenter
-          latOffset = (u.latitude - activeCoords.lat) * 12; // Adjusted scale for beautiful visual layout density
-          lngOffset = (u.longitude - activeCoords.lng) * 12;
-          
-          latOffset = Math.max(-0.45, Math.min(0.45, latOffset));
-          lngOffset = Math.max(-0.45, Math.min(0.45, lngOffset));
-        }
+        // A user is only a real radar candidate when we have a genuine GPS
+        // coordinate for them. Never fabricate a distance from a fallback city
+        // or from a demo distance value.
+        const hasRealCoordinates = typeof u.latitude === 'number' && Number.isFinite(u.latitude)
+          && typeof u.longitude === 'number' && Number.isFinite(u.longitude);
+        if (!hasRealCoordinates) return;
 
-        // 3. Proximity Filter check o!
+        const activeCoords = userCoords;
+        if (!activeCoords || !Number.isFinite(activeCoords.lat) || !Number.isFinite(activeCoords.lng)) return;
+
+        const locationUpdatedAt = u.locationUpdatedAt || null;
+        const locationAgeMs = locationUpdatedAt ? Date.now() - new Date(locationUpdatedAt).getTime() : Infinity;
+        // Don't use stale locations for live nearby discovery. Existing friends/chats
+        // can still be kept elsewhere in the chat UI, but stale coordinates must not
+        // make someone appear physically nearby.
+        if (!Number.isFinite(locationAgeMs) || locationAgeMs > 5 * 60 * 1000) return;
+
+        let distanceMeters = Math.round(calculateHaversineDistance(activeCoords.lat, activeCoords.lng, u.latitude, u.longitude));
+        let latOffset = (u.latitude - activeCoords.lat) * 12;
+        let lngOffset = (u.longitude - activeCoords.lng) * 12;
+        latOffset = Math.max(-0.45, Math.min(0.45, latOffset));
+        lngOffset = Math.max(-0.45, Math.min(0.45, lngOffset));
+
+        // 3. Proximity Filter: only genuine coordinates inside the user's radius.
         const isWithinRadius = distanceMeters <= radarRadius;
-        if (!isWithinRadius && !keepRegardlessOfRadius) return;
+        if (!isWithinRadius) return;
         
         // Ignore banned users
         if (u.banned === true || (u.reportsCount !== undefined && u.reportsCount >= 10)) return;
@@ -6469,20 +6524,12 @@ export function useNearbyController() {
       // threads from the Chats tab - the messages were still safely in Firestore, they
       // just never rendered, which looked exactly like "replies aren't coming through".
       const hasExistingChat = (chatMessages[nb.id]?.length ?? 0) > 0;
-      // Accepted friends must remain available in Chats even when they are outside
-      // the current Radar radius. Radar discovery stays location-based; chat access
-      // is relationship-based.
-      const isAcceptedFriend = friendIds.includes(nb.id) || nb.isFriend === true;
-      const isWithinRadius =
-        nb.id === 'nb-myai' ||
-        nb.distanceMeters <= radarRadius ||
-        hasExistingChat ||
-        isAcceptedFriend;
+      const isWithinRadius = nb.id === 'nb-myai' || nb.distanceMeters <= radarRadius || hasExistingChat;
       const matchesSearch = nb.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
                             nb.username.toLowerCase().includes(searchQuery.toLowerCase());
       return isWithinRadius && matchesSearch;
     });
-  }, [syncedNeighbors, radarRadius, searchQuery, chatMessages, friendIds]);
+  }, [syncedNeighbors, radarRadius, searchQuery, chatMessages]);
 
   // Memoize sorted & filtered chat lists to prevent expensive computations on every render frame
   const sortedChatList = useMemo(() => {
