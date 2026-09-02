@@ -822,7 +822,11 @@ export default function ChatRoomOverlay() {
                           <span>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                           {isMy && !msg.deletedForEveryone && (
                             <span className="flex items-center space-x-0.5">
-                              {msg.status === 'sending' ? (
+                              {msg.status === 'failed' ? (
+                                /* A failed send used to fall through to the blue double-tick,
+                                   i.e. a message that never left the device was displayed as READ. */
+                                <span className="text-[10px] text-red-400 font-bold" title="Not sent">⚠️ Not sent</span>
+                              ) : msg.status === 'sending' ? (
                                 <span className="text-[10px] animate-spin">⏳</span>
                               ) : msg.status === 'sent' ? (
                                 <Check className="w-3.5 h-3.5 text-zinc-400" />
