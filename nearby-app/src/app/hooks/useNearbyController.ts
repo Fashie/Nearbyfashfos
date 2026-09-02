@@ -3399,7 +3399,10 @@ export function useNearbyController() {
 
         const locationUpdatedAt = u.locationUpdatedAt || null;
         const locationAgeMs = locationUpdatedAt ? Date.now() - new Date(locationUpdatedAt).getTime() : Infinity;
-        const hasFreshLocation = Number.isFinite(locationAgeMs) && locationAgeMs <= 5 * 60 * 1000;
+        // 5 minutes was too tight: a phone whose screen slept for a few minutes
+        // dropped off everyone's radar and needed a manual re-open to come back.
+        // 30 minutes still excludes genuinely stale/abandoned locations.
+        const hasFreshLocation = Number.isFinite(locationAgeMs) && locationAgeMs <= 30 * 60 * 1000;
 
         // `hasExistingChat` was computed above and then never actually used, and the
         // proximity/staleness gates below `return`ed unconditionally. Net effect: a
@@ -3942,7 +3945,40 @@ export function useNearbyController() {
 
     startMappTracking();
 
+    // ---------------------------------------------------------------
+    // Location HEARTBEAT - this is what makes two real phones see each other.
+    //
+    // `locationUpdatedAt` is treated as stale after 5 minutes by the users
+    // listener, and anyone stale is dropped from the radar. But the ONLY thing
+    // that ever refreshed it was the watchPosition callback, and that callback
+    // only fires when the device physically moves more than ~2 metres. So a
+    // phone sitting still on a table stopped publishing within 5 minutes and
+    // then vanished from every other user's radar - which is exactly the
+    // "two phones, two accounts, they can't see each other" symptom. Both
+    // devices go stale while you're standing there staring at them.
+    //
+    // A periodic forced re-write keeps the timestamp fresh while the app is
+    // open. `force` bypasses the 15s rate-limit and the 15m-moved gate.
+    const heartbeat = setInterval(() => {
+      if (document.visibilityState === 'hidden') return; // don't burn quota in the background
+      const coords = latestCoordsRef.current;
+      if (!coords || !auth.currentUser) return;
+      updatePresetWithCoordinates(coords.lat, coords.lng, true).catch(() => {});
+    }, 90000); // 90s - comfortably inside the 5 minute staleness window
+
+    // Also publish immediately on regaining focus, so switching back to the app
+    // makes you discoverable again right away instead of after the next tick.
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      const coords = latestCoordsRef.current;
+      if (!coords || !auth.currentUser) return;
+      updatePresetWithCoordinates(coords.lat, coords.lng, true).catch(() => {});
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
+      clearInterval(heartbeat);
+      document.removeEventListener('visibilitychange', onVisible);
       if (navigator.geolocation) {
         if (watchId !== null) { try { navigator.geolocation.clearWatch(watchId); } catch(e){} }
         if (fallbackWatchId !== null) { try { navigator.geolocation.clearWatch(fallbackWatchId); } catch(e){} }
@@ -6700,7 +6736,13 @@ export function useNearbyController() {
       // threads from the Chats tab - the messages were still safely in Firestore, they
       // just never rendered, which looked exactly like "replies aren't coming through".
       const hasExistingChat = (chatMessages[nb.id]?.length ?? 0) > 0;
-      const isWithinRadius = nb.id === 'nb-myai' || nb.distanceMeters <= radarRadius || hasExistingChat;
+      // `distanceMeters` is optional now (we only know it when both sides have fresh
+      // GPS). `undefined <= radarRadius` is false, which would have silently hidden
+      // every friend we can't currently range-find. Treat unknown distance as "keep".
+      const isWithinRadius = nb.id === 'nb-myai'
+        || nb.distanceMeters === undefined
+        || nb.distanceMeters <= radarRadius
+        || hasExistingChat;
       const matchesSearch = nb.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
                             nb.username.toLowerCase().includes(searchQuery.toLowerCase());
       return isWithinRadius && matchesSearch;
