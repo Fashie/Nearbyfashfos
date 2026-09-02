@@ -1090,13 +1090,6 @@ export function useNearbyController() {
   const [userGroupInvitePolicy, setUserGroupInvitePolicy] = useState<'always' | 'ask' | 'never'>('ask');
   const [userGroupCallPolicy, setUserGroupCallPolicy] = useState<'always' | 'ask' | 'never'>('ask');
   const [friendIds, setFriendIds] = useState<string[]>([]); // starts empty o!
-  // Mirror of friendIds for use inside long-lived listener callbacks (the
-  // reconciler) without making them re-subscribe on every friend change.
-  const friendIdsRef = useRef<string[]>([]);
-
-  useEffect(() => {
-    friendIdsRef.current = friendIds;
-  }, [friendIds]);
 
   // User Radar Presence / Visibility (Adding yourself on the radar app!)
   const [isUserVisibleOnRadar, setIsUserVisibleOnRadar] = useState<boolean>(true);
@@ -1675,8 +1668,10 @@ export function useNearbyController() {
         avatarEmoji: "🙋‍♂️",
         avatarColor: "bg-neutral-800 border-neutral-700 border",
         isSubscribed: isSubscribed,
-        // Same clobber hazard as the autosave: this is a merge write built from local
-        // state and can run after friendships already exist. Never overwrite the array.
+        // friendIds deliberately omitted - see the write below. This doc is built
+        // from local React state and this handler is reachable again after signup
+        // (the profile/onboarding sheet in the header), so including a stale local
+        // array here would wipe friendships made on the other device.
         isUserVisibleOnRadar: isUserVisibleOnRadar,
         userRadarStatusText: userRadarStatusText,
         userRadarEmoji: userRadarEmoji,
@@ -1711,7 +1706,10 @@ export function useNearbyController() {
         updatedAt: new Date().toISOString()
       };
       
-      await setDoc(userDocRef, finalDoc);
+      // merge:true is required now that friendIds is omitted above - a plain
+      // setDoc() replaces the entire document, which would DELETE the user's
+      // friendIds field and instantly unfriend them from everyone.
+      await setDoc(userDocRef, finalDoc, { merge: true });
       
       // Update local states
       setUserDisplayName(cleanName);
@@ -2490,19 +2488,7 @@ export function useNearbyController() {
       // important on mobile where the console usually isn't reachable at all.
       const errMsg = err instanceof Error ? err.message : String(err);
       markMessageFailed(threadId, msg.id);
-      // permission-denied here almost always means the friendship is one-sided
-      // (areFriends() reads BOTH users' friendIds). Say so plainly instead of
-      // showing a raw Firestore string that reads like a network problem - and
-      // kick the reconciler by re-asserting our own side of the friendship.
-      const isPerm = /permission|insufficient/i.test(errMsg);
-      if (isPerm && !threadId.startsWith('nb-') && !threadId.startsWith('group-')) {
-        setAudioFeedback("⚠️ Friendship isn't confirmed on both sides yet - repairing, try again in a moment.");
-        try {
-          await setDoc(doc(db, 'users', fUser.uid), { friendIds: arrayUnion(threadId) }, { merge: true });
-        } catch { /* best effort */ }
-      } else {
-        setAudioFeedback(`⚠️ Message failed to send: ${errMsg}`);
-      }
+      setAudioFeedback(`⚠️ Message failed to send: ${errMsg}`);
       setTimeout(() => setAudioFeedback(""), 6000);
     }
   };
@@ -3131,15 +3117,10 @@ export function useNearbyController() {
 
         try {
           await deleteDoc(doc(db, 'friend_requests', `${currentUser.uid}_${receiverId}`));
+          await deleteDoc(doc(db, 'friend_requests', `${receiverId}_${currentUser.uid}`));
         } catch (e) {
           console.warn("Firestore friend_requests cleanup after finalize failed:", e);
         }
-        // The reverse doc usually doesn't exist; deleting a missing doc is a
-        // permission error (no `resource.data` to match on), which previously
-        // aborted the loop before later requests were processed. Isolate it.
-        try {
-          await deleteDoc(doc(db, 'friend_requests', `${receiverId}_${currentUser.uid}`));
-        } catch { /* expected when there was no reciprocal request */ }
       }
     }, (err) => {
       handleFirestoreError(err, OperationType.GET, 'friend_requests_accepted');
@@ -3147,60 +3128,6 @@ export function useNearbyController() {
 
     return () => unsubAccepted();
   }, [currentUser]);
-
-  // ---------------------------------------------------------------------
-  // FRIENDSHIP RECONCILER (self-heal half-synced pairs)
-  //
-  // A friendship is only real when BOTH users list each other - the DM rules
-  // call areFriends(), which reads both docs. Any pair that ended up one-sided
-  // (the old autosave clobber, a write that failed while offline, an accept
-  // whose second write never landed) is permanently stuck: both people see
-  // "message failed to send" and there is no button anywhere that repairs it.
-  //
-  // This watches for anyone who lists ME as their friend while I don't list
-  // them, and completes MY side. It's always a same-user write on my own doc,
-  // so it can't be denied by the rules, and arrayUnion is idempotent.
-  // Existing broken accounts fix themselves on next launch - no reinstall.
-  // ---------------------------------------------------------------------
-  useEffect(() => {
-    if (!currentUser || !isProfileLoaded) return;
-
-    const usersCol = collection(db, 'users');
-    const theyListMe = query(usersCol, where('friendIds', 'array-contains', currentUser.uid));
-
-    const unsubReconcile = onSnapshot(theyListMe, async (snapshot) => {
-      const missing: string[] = [];
-      snapshot.forEach((docSnap) => {
-        const otherId = docSnap.id;
-        if (otherId === currentUser.uid) return;
-        if (!friendIdsRef.current.includes(otherId)) missing.push(otherId);
-      });
-      if (missing.length === 0) return;
-
-      console.warn(`[reconciler] repairing ${missing.length} one-sided friendship(s):`, missing);
-      // Reflect locally first so the UI unblocks immediately.
-      setFriendIds(prev => {
-        const next = [...prev];
-        missing.forEach(id => { if (!next.includes(id)) next.push(id); });
-        return next;
-      });
-      setNeighbors(prev => prev.map(n => missing.includes(n.id) ? { ...n, isFriend: true } : n));
-
-      try {
-        await setDoc(
-          doc(db, 'users', currentUser.uid),
-          { friendIds: arrayUnion(...missing) },
-          { merge: true }
-        );
-      } catch (e) {
-        console.error("[reconciler] failed to repair friendIds:", e);
-      }
-    }, (err) => {
-      console.warn("[reconciler] listener error:", err);
-    });
-
-    return () => unsubReconcile();
-  }, [currentUser, isProfileLoaded]);
 
   // Debounced effect for auto-persisting settings and note updates to Firebase
   useEffect(() => {
@@ -3219,17 +3146,18 @@ export function useNearbyController() {
           website: userWebsite,
           appLanguage,
           isSubscribed,
-          // *** DO NOT WRITE friendIds HERE. ***
+          // *** friendIds is deliberately NOT written here. ***
           // This payload is built from local React state and runs on a 1.2s debounce
-          // after ANY profile-ish change (bio, radar toggle, theme, GPS heartbeat...).
-          // Writing the local `friendIds` array here does a whole-array overwrite, so
-          // it silently REVERTED friendships that the other device had just created:
-          // Bob accepts -> server has alice.friendIds=[bob] -> Alice's autosave fires
-          // a moment later with her stale local [] -> friendship erased on her side
-          // only. Result: Bob's phone says "Friends", Alice's says "Add friend", and
-          // every DM fails areFriends() with "message failed to send".
-          // friendIds is now ONLY ever mutated via arrayUnion/arrayRemove in the
-          // dedicated friend handlers, which are atomic and can't clobber.
+          // after ANY profile-ish change (bio, radar toggle, theme, location update).
+          // Writing the local `friendIds` array does a WHOLE-ARRAY OVERWRITE, which
+          // silently reverted friendships the other device had just created:
+          //   Bob accepts  -> server: alice.friendIds = [bob]
+          //   Alice's autosave fires a moment later with her stale local []
+          //   -> server: alice.friendIds = []   (friendship erased on her side only)
+          // Result: Bob's phone says "Friends", Alice's says "Add friend", and every
+          // DM fails areFriends() with "message failed to send".
+          // friendIds is now only ever changed via arrayUnion/arrayRemove in the
+          // dedicated friend handlers, which are atomic and cannot clobber.
           isUserVisibleOnRadar,
           userRadarStatusText,
           userRadarEmoji,
@@ -3267,9 +3195,7 @@ export function useNearbyController() {
     userWebsite,
     appLanguage,
     isSubscribed,
-    // friendIds intentionally NOT a dependency - it no longer participates in this
-    // write, and leaving it here would just re-fire the autosave on every friend
-    // change for no reason.
+    // friendIds removed: it no longer participates in this write.
     isUserVisibleOnRadar,
     userRadarStatusText,
     userRadarEmoji,
