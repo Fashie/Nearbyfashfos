@@ -694,7 +694,7 @@ export const ChatListTab = React.memo(function ChatListTab({
                           {requester.name}
                         </h4>
                         <p className={`text-xs truncate ${appTheme === 'dark' ? 'text-zinc-400' : 'text-zinc-500'}`}>
-                          @{requester.username} • {requester.distanceMeters}m away
+                          @{requester.username}{requester.distanceMeters !== undefined ? ` • ${requester.distanceMeters}m away` : ''}
                         </p>
                       </div>
                     </div>
@@ -806,7 +806,7 @@ export const ChatListTab = React.memo(function ChatListTab({
                         </div>
                         <div className="min-w-0">
                           <span className="font-bold text-sm block truncate">{nb.name}</span>
-                          <span className="text-xs text-zinc-500 truncate block">@{nb.username} • {nb.distanceMeters}m away</span>
+                          <span className="text-xs text-zinc-500 truncate block">@{nb.username}{nb.distanceMeters !== undefined ? ` • ${nb.distanceMeters}m away` : ''}</span>
                         </div>
                       </div>
                       <span className="text-xs text-[#25D366] font-bold flex-shrink-0">Chat →</span>
