@@ -1089,7 +1089,11 @@ export function useNearbyController() {
   // Groups and Privacy States
   const [userGroupInvitePolicy, setUserGroupInvitePolicy] = useState<'always' | 'ask' | 'never'>('ask');
   const [userGroupCallPolicy, setUserGroupCallPolicy] = useState<'always' | 'ask' | 'never'>('ask');
-  const [friendIds, setFriendIds] = useState<string[]>([]); // starts empty o!
+  const [friendIds, setFriendIds] = useState<string[]>([]); // derived from /friendships
+
+  // Deterministic friendship document id - both devices compute the same one,
+  // so a relationship is exactly one document and duplicates are impossible.
+  const friendshipDocId = (a: string, b: string) => (a < b ? `${a}_${b}` : `${b}_${a}`);
 
   // User Radar Presence / Visibility (Adding yourself on the radar app!)
   const [isUserVisibleOnRadar, setIsUserVisibleOnRadar] = useState<boolean>(true);
@@ -1857,7 +1861,9 @@ export function useNearbyController() {
         if (data.gbAntiDelete !== undefined) setGbAntiDelete(data.gbAntiDelete);
         if (data.gbHideOnline !== undefined) setGbHideOnline(data.gbHideOnline);
         if (data.gbBlueTickOnReply !== undefined) setGbBlueTickOnReply(data.gbBlueTickOnReply);
-        if (data.friendIds && Array.isArray(data.friendIds)) setFriendIds(data.friendIds);
+        // friendIds intentionally NOT read here - /friendships is the single
+        // source of truth. Reading the cached array back would race the
+        // friendship listener and resurrect deleted friends.
         if (data.isSubscribed !== undefined) setIsSubscribed(data.isSubscribed);
         if (data.isUserVisibleOnRadar !== undefined) setIsUserVisibleOnRadar(data.isUserVisibleOnRadar);
         if (data.radarVisibilityMode !== undefined) setRadarVisibilityMode(data.radarVisibilityMode);
@@ -3033,100 +3039,55 @@ export function useNearbyController() {
     };
   }, [currentUser]);
 
-  // Synchronize Friend Requests in real-time when currentUser exists o!
+  // ---------------------------------------------------------------
+  // SINGLE FRIENDSHIP LISTENER
+  //
+  // Replaces three separate listeners (incoming / outgoing / accepted-finalize)
+  // that each wrote into their own React array, plus a users-doc listener that
+  // wrote friendIds. Those four sources raced each other: an optimistic update
+  // would be overwritten by a stale snapshot, which is why the Add button
+  // flipped to "Requested" and then bounced back to "Proximity connection
+  // request cancelled" - the UI was reading a state nobody agreed on.
+  //
+  // Now: one query, one document per relationship, three derived arrays. There
+  // is no local mutation of these arrays anywhere else in the app, so what you
+  // see is always exactly what the server says.
+  // ---------------------------------------------------------------
   useEffect(() => {
     if (!currentUser) return;
 
-    // 1. Incoming friend requests (received by currentUser)
-    const incomingQuery = query(
-      collection(db, 'friend_requests'),
-      where('receiverId', '==', currentUser.uid),
-      where('status', '==', 'pending')
+    const q = query(
+      collection(db, 'friendships'),
+      where('members', 'array-contains', currentUser.uid)
     );
-    
-    const unsubIncoming = onSnapshot(incomingQuery, (snapshot) => {
-      const requesters: string[] = [];
+
+    const unsub = onSnapshot(q, (snapshot) => {
+      const friends: string[] = [];
+      const incoming: string[] = [];
+      const outgoing: string[] = [];
+
       snapshot.forEach((docSnap) => {
-        const data = docSnap.data();
-        if (data.senderId) {
-          requesters.push(data.senderId);
+        const d = docSnap.data() as any;
+        const members: string[] = Array.isArray(d?.members) ? d.members : [];
+        const other = members.find((m) => m !== currentUser.uid);
+        if (!other) return;
+
+        if (d.status === 'accepted') {
+          friends.push(other);
+        } else if (d.status === 'pending') {
+          if (d.requestedBy === currentUser.uid) outgoing.push(other);
+          else incoming.push(other);
         }
       });
-      setPendingFriendRequests(requesters);
+
+      setFriendIds(friends);
+      setPendingFriendRequests(incoming);
+      setSentFriendRequestIds(outgoing);
     }, (err) => {
-      handleFirestoreError(err, OperationType.GET, 'friend_requests_incoming');
+      handleFirestoreError(err, OperationType.GET, 'friendships');
     });
 
-    // 2. Outgoing friend requests (sent by currentUser)
-    const outgoingQuery = query(
-      collection(db, 'friend_requests'),
-      where('senderId', '==', currentUser.uid),
-      where('status', '==', 'pending')
-    );
-
-    const unsubOutgoing = onSnapshot(outgoingQuery, (snapshot) => {
-      const targetIds: string[] = [];
-      snapshot.forEach((docSnap) => {
-        const data = docSnap.data();
-        if (data.receiverId) {
-          targetIds.push(data.receiverId);
-        }
-      });
-      setSentFriendRequestIds(targetIds);
-    }, (err) => {
-      handleFirestoreError(err, OperationType.GET, 'friend_requests_outgoing');
-    });
-
-    return () => {
-      unsubIncoming();
-      unsubOutgoing();
-    };
-  }, [currentUser]);
-
-  // Finalize friend requests the OTHER person accepted. handleAcceptFriendRequest
-  // never writes to the sender's own users/{uid} doc anymore (see the long comment
-  // there) - it just flips this request's status to 'accepted'. This effect is what
-  // completes the sync on the sender's own device: adding the new friend to your OWN
-  // friendIds is always a same-user write, so it can never be blocked by the rules
-  // the way the old cross-account write could. Runs automatically whenever this
-  // client is online and listening, including on next login if it wasn't at the time.
-  useEffect(() => {
-    if (!currentUser) return;
-
-    const acceptedQuery = query(
-      collection(db, 'friend_requests'),
-      where('senderId', '==', currentUser.uid),
-      where('status', '==', 'accepted')
-    );
-
-    const unsubAccepted = onSnapshot(acceptedQuery, async (snapshot) => {
-      for (const acceptedDoc of snapshot.docs) {
-        const data = acceptedDoc.data();
-        const receiverId = data.receiverId;
-        if (!receiverId) continue;
-
-        try {
-          await setDoc(doc(db, 'users', currentUser.uid), { friendIds: arrayUnion(receiverId) }, { merge: true });
-        } catch (e) {
-          console.error("Firestore sender-side friend finalize failed:", e);
-          handleFirestoreError(e, OperationType.UPDATE, `users/${currentUser.uid}`);
-          // Leave the request doc in place so this retries on the next snapshot/login
-          // instead of silently disappearing while still half-synced.
-          continue;
-        }
-
-        try {
-          await deleteDoc(doc(db, 'friend_requests', `${currentUser.uid}_${receiverId}`));
-          await deleteDoc(doc(db, 'friend_requests', `${receiverId}_${currentUser.uid}`));
-        } catch (e) {
-          console.warn("Firestore friend_requests cleanup after finalize failed:", e);
-        }
-      }
-    }, (err) => {
-      handleFirestoreError(err, OperationType.GET, 'friend_requests_accepted');
-    });
-
-    return () => unsubAccepted();
+    return () => unsub();
   }, [currentUser]);
 
   // Debounced effect for auto-persisting settings and note updates to Firebase
@@ -3328,7 +3289,9 @@ export function useNearbyController() {
         if (data.username && data.username !== 'nearby_member') setUserUsername(data.username);
         if (data.bio) setUserBio(data.bio);
         if (data.customProfilePhoto) setCustomProfilePhoto(data.customProfilePhoto);
-        if (data.friendIds && Array.isArray(data.friendIds)) setFriendIds(data.friendIds);
+        // friendIds intentionally NOT read here - /friendships is the single
+        // source of truth. Reading the cached array back would race the
+        // friendship listener and resurrect deleted friends.
         if (data.contacts && Array.isArray(data.contacts)) {
           setContactsList(data.contacts);
         }
@@ -3385,7 +3348,10 @@ export function useNearbyController() {
         if (!u || !u.uid) return;
         if (u.uid === currentUser.uid) return; // skip self
         
-        const isUserFriend = (Array.isArray(u.friendIds) ? u.friendIds : []).includes(currentUser.uid) || (Array.isArray(friendIds) ? friendIds : []).includes(u.uid);
+        // Trust ONLY our own friendships-derived list. The other user's cached
+        // `friendIds` array is legacy and may be stale/absent; reading it was how
+        // one phone could believe in a friendship the other had never confirmed.
+        const isUserFriend = (Array.isArray(friendIds) ? friendIds : []).includes(u.uid);
         const isFriendRequester = pendingFriendRequests.includes(u.uid);
         const isFriendRequested = sentFriendRequestIds.includes(u.uid);
         const hasRelationship = isUserFriend || isFriendRequester || isFriendRequested;
@@ -5939,203 +5905,109 @@ export function useNearbyController() {
     actuallyAddFriend(neighborId);
   };
 
-  const handleAcceptFriendRequest = useCallback(async (reqId: string) => {
+  const handleAcceptFriendRequest = useCallback(async (senderId: string) => {
     if (!currentUser) return;
-    const senderId = reqId;
-    const receiverId = currentUser.uid;
-    const reqDocId = `${senderId}_${receiverId}`;
+    const fid = friendshipDocId(currentUser.uid, senderId);
 
-    // Update local React states immediately for real-time responsiveness o!
-    setFriendIds(prev => {
-      if (!prev.includes(senderId)) {
-        return [...prev, senderId];
-      }
-      return prev;
-    });
-    setNeighbors(prev => prev.map(n => {
-      if (n.id === senderId) {
-        return {
-          ...n,
-          isFriend: true,
-          friendIds: [...(Array.isArray(n.friendIds) ? n.friendIds : []), receiverId]
-        };
-      }
-      return n;
-    }));
-    setPendingFriendRequests(prev => prev.filter(id => id !== senderId));
-    setSentFriendRequestIds(prev => prev.filter(id => id !== senderId));
-    if (viewingNeighborProfile && viewingNeighborProfile.id === senderId) {
-      setViewingNeighborProfile(prev => prev ? {
-        ...prev,
-        isFriend: true,
-        friendIds: [...(Array.isArray(prev.friendIds) ? prev.friendIds : []), receiverId]
-      } : null);
-    }
-
-    triggerBeep(650, 0.1);
-    const requester = neighbors.find(n => n.id === senderId);
-    setAudioFeedback(`🎉 Added ${requester ? requester.name : 'Neighbor'} as Friend!`);
-    setTimeout(() => setAudioFeedback(""), 2200);
-
-    // Perform Firestore updates safely in background try-catch blocks.
-    //
-    // IMPORTANT: this function only ever writes to the ACCEPTING user's OWN
-    // `users/{receiverId}` document now - never to the sender's. Writing to
-    // someone else's user doc cross-account (the old code did this to add
-    // yourself to *their* friendIds) depends on a fragile rules condition
-    // (validFriendIdsAdd) and, worse, if that other user's `users/{uid}` doc
-    // doesn't exist yet for any reason, Firestore treats the write as a
-    // *create* rather than an *update* - and the create rule only allows
-    // `isOwner`, so it is unconditionally denied no matter what the update
-    // rule says. That silent, one-sided failure is exactly what produces
-    // "Friends" on one account and "Pending approval" on the other forever,
-    // with no way to recover.
-    //
-    // Instead: mark the request 'accepted' (still just an update to a doc
-    // both sender and receiver are already allowed to touch), and let the
-    // ORIGINAL SENDER's own client add the receiver to *their own* friendIds
-    // the next time it's listening (see the friend_requests "accepted" sync
-    // effect below). Every friendIds write is now a same-user write, so it
-    // always passes `isOwner` - there is no longer any cross-account write
-    // for the rules to reject.
+    // ONE write. No optimistic local mutation - the snapshot listener updates
+    // the UI a few ms later. Previously this function mutated four React arrays
+    // AND wrote to two user documents; any one of those failing left the two
+    // phones permanently disagreeing.
     try {
-      const userDocRef = doc(db, 'users', receiverId);
-      await setDoc(userDocRef, { friendIds: arrayUnion(senderId) }, { merge: true });
+      await setDoc(doc(db, 'friendships', fid), { status: 'accepted' }, { merge: true });
 
-      // Best-effort: also add ourselves to the SENDER's friendIds while the request
-      // doc is still 'pending' - that is exactly the window in which the
-      // validFriendIdsAdd() rule permits this cross-account write. Doing it here
-      // makes the friendship mutual instantly, which matters because the DM rules
-      // require areFriends() on BOTH sides: without it, neither person can send a
-      // message until the sender's own client happens to be online to finalize,
-      // and the accepting user just sees "you can only message friends".
-      // If it is denied we simply fall through to the 'accepted' handshake below,
-      // which the sender's client completes later - so this can never make things
-      // worse, it only removes the wait in the common case.
+      triggerBeep(650, 0.1);
+      const requester = neighbors.find(n => n.id === senderId);
+      setAudioFeedback(`🎉 You and ${requester ? requester.name : 'your neighbor'} are now friends!`);
+      setTimeout(() => setAudioFeedback(""), 2500);
+
       try {
-        await setDoc(doc(db, 'users', senderId), { friendIds: arrayUnion(receiverId) }, { merge: true });
-      } catch (crossErr) {
-        console.warn("Immediate mutual friend write not permitted; deferring to sender-side finalize:", crossErr);
-      }
-    } catch (e) {
-      console.error("Firestore user sync friend union failed:", e);
-      handleFirestoreError(e, OperationType.UPDATE, `users/${receiverId}`);
-      const errMsg = e instanceof Error ? e.message : String(e);
-      setAudioFeedback(`⚠️ Friend sync failed on your side: ${errMsg}`);
-      setTimeout(() => setAudioFeedback(""), 6000);
-    }
-
-    try {
-      // Don't delete the request here - leave it as 'accepted' so the
-      // sender's own client can pick it up and finish their side of the
-      // sync (see the effect below), then delete it once THEIR write
-      // actually succeeds. Deleting it immediately here, before we know
-      // the sender's side ever completed, is what let the old flow silently
-      // strand people in a half-friended state with no record left to retry.
-      await setDoc(doc(db, 'friend_requests', reqDocId), { status: 'accepted' }, { merge: true });
-    } catch (e) {
-      console.warn("Firestore friend_requests accept-status write failed:", e);
-      handleFirestoreError(e, OperationType.UPDATE, `friend_requests/${reqDocId}`);
-    }
-
-    try {
-      await createNotification({
-        userId: senderId,
-        senderId: receiverId,
-        senderName: (userDisplayName || currentUser.displayName || 'A neighbor'),
-        type: 'friend_request',
-        title: 'Friend Request Accepted',
-        message: `${(userDisplayName || currentUser.displayName || 'A neighbor')} accepted your friend request!`
-      });
-    } catch (notifErr) {
-      console.warn("Failed to create friend request acceptance notification:", notifErr);
-    }
-  }, [currentUser, neighbors, viewingNeighborProfile, triggerBeep]);
-
-  const actuallyAddFriend = useCallback(async (neighborId: string) => {
-    if (!currentUser) return;
-    try {
-      if ((Array.isArray(friendIds) ? friendIds : []).includes(neighborId)) {
-        // Unfriend
-        const userDocRef = doc(db, 'users', currentUser.uid);
-        const neighborDocRef = doc(db, 'users', neighborId);
-
-        // Each write is now independent (own try/catch) instead of one throwing and
-        // aborting the rest - previously, if removing yourself from the other person's
-        // friendIds failed, the whole function threw and even the friend_requests cleanup
-        // below never ran, leaving things in a half-removed state.
-        try {
-          await setDoc(userDocRef, { friendIds: arrayRemove(neighborId) }, { merge: true });
-        } catch (e) {
-          console.error("Failed to remove friend from your own list:", e);
-          handleFirestoreError(e, OperationType.UPDATE, `users/${currentUser.uid}`);
-        }
-        try {
-          await setDoc(neighborDocRef, { friendIds: arrayRemove(currentUser.uid) }, { merge: true });
-        } catch (e) {
-          console.error("Failed to remove yourself from their friend list:", e);
-          handleFirestoreError(e, OperationType.UPDATE, `users/${neighborId}`);
-        }
-
-        try {
-          await deleteDoc(doc(db, 'friend_requests', `${currentUser.uid}_${neighborId}`));
-          await deleteDoc(doc(db, 'friend_requests', `${neighborId}_${currentUser.uid}`));
-        } catch (e) {
-          console.warn("friend_requests cleanup on unfriend failed (likely already deleted):", e);
-        }
-
-        triggerBeep(320, 0.1, 'triangle');
-        setAudioFeedback("Removed from friends.");
-        setTimeout(() => setAudioFeedback(""), 2000);
-      } else if (pendingFriendRequests.includes(neighborId)) {
-        // Auto-accept request if they already sent us one o!
-        await handleAcceptFriendRequest(neighborId);
-      } else if (sentFriendRequestIds.includes(neighborId)) {
-        // Cancel request o!
-        setSentFriendRequestIds(prev => prev.filter(id => id !== neighborId));
-        await deleteDoc(doc(db, 'friend_requests', `${currentUser.uid}_${neighborId}`));
-        triggerBeep(320, 0.1, 'triangle');
-        setAudioFeedback("Proximity connection request cancelled!");
-        setTimeout(() => setAudioFeedback(""), 2000);
-      } else {
-        // Send connection request o!
-        if (neighborId === currentUser.uid) return; // never friend yourself
-        // Optimistic, so the button flips to "Requested" instantly instead of
-        // staying on "Add" and inviting a double-send.
-        setSentFriendRequestIds(prev => prev.includes(neighborId) ? prev : [...prev, neighborId]);
-        const reqRef = doc(db, 'friend_requests', `${currentUser.uid}_${neighborId}`);
-        await setDoc(reqRef, {
-          senderId: currentUser.uid,
-          receiverId: neighborId,
-          status: 'pending',
-          createdAt: new Date().toISOString()
-        });
-
-        // Add real-time notification
         await createNotification({
-          userId: neighborId,
+          userId: senderId,
           senderId: currentUser.uid,
           senderName: (userDisplayName || currentUser.displayName || 'A neighbor'),
           type: 'friend_request',
-          title: 'Friend Request',
-          message: `${(userDisplayName || currentUser.displayName || 'A neighbor')} sent you a friend request!`
+          title: 'Friend Request Accepted',
+          message: `${userDisplayName || currentUser.displayName || 'A neighbor'} accepted your friend request!`
         });
+      } catch (notifErr) {
+        console.warn("Accept notification failed (non-fatal):", notifErr);
+      }
+    } catch (e) {
+      console.error("Accept friend failed:", e);
+      handleFirestoreError(e, OperationType.UPDATE, `friendships/${fid}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      setAudioFeedback(`⚠️ Could not accept: ${msg}`);
+      setTimeout(() => setAudioFeedback(""), 5000);
+    }
+  }, [currentUser, neighbors, triggerBeep, userDisplayName]);
 
+  const handleDeclineFriendRequest = useCallback(async (senderId: string) => {
+    if (!currentUser) return;
+    const fid = friendshipDocId(currentUser.uid, senderId);
+    try {
+      await deleteDoc(doc(db, 'friendships', fid));
+      triggerBeep(320, 0.1);
+      const requester = neighbors.find(n => n.id === senderId);
+      setAudioFeedback(`Declined request from ${requester ? requester.name : 'Neighbor'}.`);
+      setTimeout(() => setAudioFeedback(""), 2200);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `friendships/${fid}`);
+    }
+  }, [currentUser, neighbors, triggerBeep]);
+
+  const actuallyAddFriend = useCallback(async (neighborId: string) => {
+    if (!currentUser || neighborId === currentUser.uid) return;
+    const fid = friendshipDocId(currentUser.uid, neighborId);
+    const members = [currentUser.uid, neighborId].sort();
+
+    try {
+      // Decide from the CURRENT derived state. Each branch is a single write and
+      // the listener reconciles the UI - no optimistic array juggling, which is
+      // what made the button flip to "Requested" then snap back to "cancelled".
+      if (friendIds.includes(neighborId)) {
+        await deleteDoc(doc(db, 'friendships', fid));           // unfriend
+        triggerBeep(320, 0.1, 'triangle');
+        setAudioFeedback("Removed from friends.");
+      } else if (pendingFriendRequests.includes(neighborId)) {
+        await handleAcceptFriendRequest(neighborId);            // they asked first
+        return;
+      } else if (sentFriendRequestIds.includes(neighborId)) {
+        await deleteDoc(doc(db, 'friendships', fid));           // cancel my request
+        triggerBeep(320, 0.1, 'triangle');
+        setAudioFeedback("Connection request cancelled.");
+      } else {
+        await setDoc(doc(db, 'friendships', fid), {             // send request
+          members,
+          requestedBy: currentUser.uid,
+          status: 'pending',
+          createdAt: new Date().toISOString()
+        });
         setFriendsAddedTodayCount(prev => prev + 1);
         triggerBeep(480, 0.1, 'sine');
         setAudioFeedback("Connection request sent! 📬");
-        setTimeout(() => setAudioFeedback(""), 2000);
+
+        try {
+          await createNotification({
+            userId: neighborId,
+            senderId: currentUser.uid,
+            senderName: (userDisplayName || currentUser.displayName || 'A neighbor'),
+            type: 'friend_request',
+            title: 'Friend Request',
+            message: `${userDisplayName || currentUser.displayName || 'A neighbor'} sent you a friend request!`
+          });
+        } catch (notifErr) {
+          console.warn("Request notification failed (non-fatal):", notifErr);
+        }
       }
+      setTimeout(() => setAudioFeedback(""), 2500);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `friend_action_${neighborId}`);
-      // Roll the optimistic flags back so the UI reflects reality rather than
-      // permanently showing "Requested" for a request that never got written.
-      setSentFriendRequestIds(prev => prev.filter(id => id !== neighborId));
-      const errMsg = err instanceof Error ? err.message : String(err);
-      setAudioFeedback(`⚠️ Friend action failed: ${errMsg}`);
+      handleFirestoreError(err, OperationType.WRITE, `friendships/${fid}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      setAudioFeedback(`⚠️ Friend action failed: ${msg}`);
       setTimeout(() => setAudioFeedback(""), 5000);
     }
-  }, [currentUser, friendIds, pendingFriendRequests, sentFriendRequestIds, triggerBeep, handleAcceptFriendRequest]);
+  }, [currentUser, friendIds, pendingFriendRequests, sentFriendRequestIds, triggerBeep, handleAcceptFriendRequest, userDisplayName]);
 
   const sendPrivateMessageToNeighbor = useCallback(async (neighborId: string, text: string) => {
     if (!neighborId.startsWith('nb-') && !friendIds.includes(neighborId)) {
@@ -6175,34 +6047,6 @@ export function useNearbyController() {
       setActiveTab('chat');
     }
   }, [neighbors]);
-
-  const handleDeclineFriendRequest = async (reqId: string) => {
-    if (!currentUser) return;
-    try {
-      const senderId = reqId;
-      const receiverId = currentUser.uid;
-      const reqDocId = `${senderId}_${receiverId}`;
-
-      // Optimistically drop it from the list. Without this the declined request
-      // stayed on screen until the Firestore snapshot came back (and stayed
-      // forever if the delete failed), so people tapped Decline repeatedly.
-      setPendingFriendRequests(prev => prev.filter(id => id !== senderId));
-
-      await deleteDoc(doc(db, 'friend_requests', reqDocId));
-      // Also clear the reverse doc if both sides happened to send a request,
-      // otherwise the declined person still shows as "pending" to the other.
-      try {
-        await deleteDoc(doc(db, 'friend_requests', `${receiverId}_${senderId}`));
-      } catch { /* usually doesn't exist - fine */ }
-
-      triggerBeep(320, 0.1);
-      const requester = neighbors.find(n => n.id === senderId);
-      setAudioFeedback(`Declined request from ${requester ? requester.name : 'Neighbor'}.`);
-      setTimeout(() => setAudioFeedback(""), 2200);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `decline_friend/${reqId}`);
-    }
-  };
 
   // 3. Pinning control (free)
   const handleTogglePinChat = (neighborId: string) => {
