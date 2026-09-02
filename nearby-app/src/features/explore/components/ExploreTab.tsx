@@ -837,7 +837,7 @@ const ExploreTab = React.memo(function ExploreTab({
     if (isEmergencyHide) return false;
     
     // Distance check
-    if (neighbor.distanceMeters > feedDistance) return false;
+    if (neighbor.distanceMeters !== undefined && neighbor.distanceMeters > feedDistance) return false;
 
     // Filters
     if (radarFilterInterest !== 'all' && !neighbor.interests?.includes(radarFilterInterest)) return false;
@@ -876,7 +876,7 @@ const ExploreTab = React.memo(function ExploreTab({
     if (bMutualCount !== aMutualCount) {
       return bMutualCount - aMutualCount;
     }
-    return a.distanceMeters - b.distanceMeters;
+    return (a.distanceMeters ?? Number.MAX_SAFE_INTEGER) - (b.distanceMeters ?? Number.MAX_SAFE_INTEGER);
   });
 
   // --- FETCH / LOAD POSTS ---
