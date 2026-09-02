@@ -180,13 +180,18 @@ service cloud.firestore {
     }
 
     match /direct_messages/{messageId} {
-      // The actual message schema (chatService.ts / useNearbyController.ts) is
-      // senderId + receiverId only - there is no `participants` array on these
-      // docs. The previous version of this rule required one, so every message
-      // write was permission-denied. This checks the real fields instead.
+      // DM docs written by saveOrUpdateMessageInFirestore() carry senderId,
+      // receiverId AND a sorted `participants` array. The client subscribes with
+      //   where('participants', 'array-contains', uid)
+      // and Firestore only allows a query whose constraint is *provably* within
+      // the read rule - a rule phrased purely in terms of senderId/receiverId can
+      // never satisfy an array-contains query on `participants`, so the entire
+      // message listener failed with permission-denied and no chat ever loaded.
+      // Allowing the participants form here is what makes that query legal.
       allow read: if signedIn()
         && (
-          resource.data.get('senderId', '') == request.auth.uid
+          request.auth.uid in resource.data.get('participants', [])
+          || resource.data.get('senderId', '') == request.auth.uid
           || resource.data.get('receiverId', '') == request.auth.uid
         );
 
@@ -194,11 +199,14 @@ service cloud.firestore {
         && request.resource.data.get('senderId', '') == request.auth.uid
         && request.resource.data.get('receiverId', '') is string
         && request.resource.data.get('receiverId', '') != request.auth.uid
+        && request.auth.uid in request.resource.data.get('participants', [])
+        && request.resource.data.get('receiverId', '') in request.resource.data.get('participants', [])
         && areFriends(request.auth.uid, request.resource.data.get('receiverId', ''));
 
       allow update, delete: if signedIn()
         && (
-          resource.data.get('senderId', '') == request.auth.uid
+          request.auth.uid in resource.data.get('participants', [])
+          || resource.data.get('senderId', '') == request.auth.uid
           || resource.data.get('receiverId', '') == request.auth.uid
         );
     }
