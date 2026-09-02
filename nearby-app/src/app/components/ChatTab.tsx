@@ -918,7 +918,7 @@ export default function ChatTab() {
                                 </div>
                                 <div className="min-w-0">
                                   <span className="font-bold text-sm block truncate">{nb.name}</span>
-                                  <span className="text-xs text-zinc-500 truncate block">@{nb.username} • {nb.distanceMeters}m away</span>
+                                  <span className="text-xs text-zinc-500 truncate block">@{nb.username}{nb.distanceMeters !== undefined ? ` • ${nb.distanceMeters}m away` : ''}</span>
                                 </div>
                               </div>
                               <span className="text-xs text-[#25D366] font-bold flex-shrink-0">Chat →</span>

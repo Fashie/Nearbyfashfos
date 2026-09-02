@@ -1263,6 +1263,7 @@ export default function SecondaryModals() {
                     <span className="text-xs font-extrabold text-emerald-400">
                       {(() => {
                         const meters = viewingNeighborProfile.distanceMeters;
+                        if (meters === undefined) return 'Distance unavailable';
                         if (meters <= 100) return '0–100m (street level)';
                         if (meters <= 500) return '100–500m (neighborhood)';
                         if (meters <= 1000) return '500m–1km (Area Level)';

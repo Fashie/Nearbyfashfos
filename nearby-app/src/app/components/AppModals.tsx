@@ -691,7 +691,7 @@ export default function AppModals() {
                         <div className="min-w-0">
                           <span className="text-xs font-bold text-white block truncate">{nb.name}</span>
                           <span className="text-[9px] text-indigo-400 font-mono block truncate">
-                            {`📍 Distance: ${nb.distanceMeters}m away`}
+                            {nb.distanceMeters !== undefined ? `📍 Distance: ${nb.distanceMeters}m away` : '📍 Distance: unknown'}
                           </span>
                         </div>
                       </div>

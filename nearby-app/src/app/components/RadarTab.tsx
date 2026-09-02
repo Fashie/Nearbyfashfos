@@ -435,7 +435,7 @@ export default function RadarTab() {
                               )}
                               <span className="font-bold text-[11px] text-zinc-200 truncate max-w-[140px]">{nb.name}</span>
                             </div>
-                            <span className="text-[10px] font-sans text-[#00AFEF] font-bold">{nb.distanceMeters}m away</span>
+                            <span className="text-[10px] font-sans text-[#00AFEF] font-bold">{nb.distanceMeters !== undefined ? `${nb.distanceMeters}m away` : 'Location unknown'}</span>
                           </div>
                         ))
                       )}

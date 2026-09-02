@@ -298,7 +298,7 @@ export default function CallScreenOverlay() {
                           📍 {ringNeighbor.streetName}
                         </span>
                         <span className="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-semibold bg-[#0F8A5F]/15 border border-[#0F8A5F]/20 text-emerald-400">
-                          ⚡ {ringNeighbor.distanceMeters}m away
+                          ⚡ {ringNeighbor.distanceMeters !== undefined ? `${ringNeighbor.distanceMeters}m away` : 'Nearby'}
                         </span>
                       </div>
                     </div>

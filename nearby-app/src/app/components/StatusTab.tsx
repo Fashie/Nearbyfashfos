@@ -485,7 +485,7 @@ export default function StatusTab() {
                               )}
                             </div>
                             <span className="text-[13px] font-bold text-[#161616] dark:text-white mt-1.5 truncate w-[72px] text-center">{nb.name}</span>
-                            <span className="text-[11px] text-neutral-400 font-medium">{nb.distanceMeters || 120}m</span>
+                            <span className="text-[11px] text-neutral-400 font-medium">{nb.distanceMeters !== undefined ? `${nb.distanceMeters}m` : '—'}</span>
                           </motion.div>
                         ))}
                       </div>
@@ -530,7 +530,7 @@ export default function StatusTab() {
                                 <div className="space-y-1 min-w-0">
                                   <div className="flex items-center space-x-1.5">
                                     <h4 className="font-bold text-[15px] text-[#161616] dark:text-white truncate">{nb.name}</h4>
-                                    <span className="text-[11px] text-neutral-400 font-medium">• {nb.distanceMeters}m</span>
+                                    <span className="text-[11px] text-neutral-400 font-medium">{nb.distanceMeters !== undefined ? `• ${nb.distanceMeters}m` : ''}</span>
                                   </div>
                                   
                                   <div className="flex items-center space-x-1">
