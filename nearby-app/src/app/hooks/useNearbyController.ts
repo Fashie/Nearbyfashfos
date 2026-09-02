@@ -958,6 +958,11 @@ export function useNearbyController() {
   // list) can check "do I already have a conversation with this person" without needing
   // chatMessages in its dependency array - that list re-subscribes to a Firestore
   // collection listener, and we don't want it tearing down/rebuilding on every message.
+  // Message ids we've already raised a "New Message" notification for, so the
+  // update path (edits/reactions/read receipts re-save the same doc) can't spam
+  // the recipient with duplicate pings for one message.
+  const notifiedMessageIdsRef = useRef<Set<string>>(new Set());
+
   const chatMessagesRef = useRef<Record<string, DirectMessage[]>>(chatMessages);
   useEffect(() => {
     chatMessagesRef.current = chatMessages;
@@ -2348,9 +2353,27 @@ export function useNearbyController() {
   // -----------------------------------------
   // Core WhatsApp Synced Persistence Helpers o!
   // -----------------------------------------
+  const markMessageFailed = (threadId: string, msgId: string) => {
+    _setChatMessages(prev => {
+      const list = prev[threadId] || [];
+      const idx = list.findIndex(m => m.id === msgId);
+      if (idx === -1) return prev;
+      const copy = [...list];
+      copy[idx] = { ...copy[idx], status: 'failed' as const };
+      return { ...prev, [threadId]: copy };
+    });
+  };
+
   const saveOrUpdateMessageInFirestore = async (msg: DirectMessage, threadId: string) => {
     const fUser = auth.currentUser;
-    if (!fUser) return;
+    if (!fUser) {
+      // Was a silent `return`: the message sat on screen looking "sent" forever
+      // while nothing was ever written. Surface it instead.
+      markMessageFailed(threadId, msg.id);
+      setAudioFeedback("⚠️ You're signed out - message not sent.");
+      setTimeout(() => setAudioFeedback(""), 4000);
+      return;
+    }
     const isGroupThread = threadId.startsWith('group-') || threadId.startsWith('sim-group-');
 
     let finalMediaUrl = msg.mediaUrl;
@@ -2418,10 +2441,27 @@ export function useNearbyController() {
         const msgDocRef = doc(db, 'direct_messages', msg.id);
         await setDoc(msgDocRef, dmBody, { merge: true });
 
-        // Add real-time notification
-        if (msgBody.type !== 'call_log' && !msg.reactions && !msg.deletedForEveryone) {
+        // Add real-time notification.
+        //
+        // This helper is ALSO the update path (edits, reactions, stars, delete-for-me,
+        // read receipts), so unguarded it fired a brand-new "New Message" notification
+        // every single time an existing message was touched - the recipient got a fresh
+        // ping for a message they'd already read, every edit. Notify exactly once, on
+        // the first write of a given message id, and only when *we* are the sender
+        // (the notifications rule requires senderId == auth.uid, so notifying on
+        // someone else's message was a guaranteed permission-denied anyway).
+        const alreadyNotified = notifiedMessageIdsRef.current.has(msg.id);
+        if (
+          msgBody.type !== 'call_log' &&
+          !alreadyNotified &&
+          dmBody.senderId === fUser.uid &&
+          dmBody.receiverId !== fUser.uid &&
+          !msg.reactions &&
+          !msg.deletedForEveryone
+        ) {
+          notifiedMessageIdsRef.current.add(msg.id);
           const senderName = dmBody.senderId === fUser.uid
-            ? (currentUser?.name || 'User')
+            ? (userDisplayName || currentUser?.displayName || 'User')
             : (neighbors.find(n => n.id === dmBody.senderId)?.name || 'A neighbor');
           const previewText = msgBody.text || 'Sent media';
           await createNotification({
@@ -2441,6 +2481,7 @@ export function useNearbyController() {
       // connection") so this is diagnosable without needing to open devtools - especially
       // important on mobile where the console usually isn't reachable at all.
       const errMsg = err instanceof Error ? err.message : String(err);
+      markMessageFailed(threadId, msg.id);
       setAudioFeedback(`⚠️ Message failed to send: ${errMsg}`);
       setTimeout(() => setAudioFeedback(""), 6000);
     }
@@ -2455,9 +2496,13 @@ export function useNearbyController() {
 
     try {
       await Promise.all(unreadMsgs.map(async (msg) => {
-        const updatedMsg = { ...msg, status: 'read' as const, isUnread: false };
+        // Only write the read-receipt fields. The previous version spread the WHOLE
+        // in-memory message back into Firestore, and the in-memory copy has its
+        // `chatThreadId` rewritten to the neighbor's id for UI purposes - so marking
+        // a chat as read silently overwrote the canonical composite thread id (and
+        // could re-write stale text/status) on every message in the conversation.
         const msgDocRef = doc(db, 'direct_messages', msg.id);
-        await setDoc(msgDocRef, updatedMsg, { merge: true });
+        await setDoc(msgDocRef, { status: 'read', isUnread: false }, { merge: true });
       }));
     } catch (err) {
       console.warn("Error marking messages read in Firestore:", err);
@@ -2727,19 +2772,40 @@ export function useNearbyController() {
 
       _setChatMessages(prev => {
         const combined = { ...prev };
-        
-        // Remove old direct message threads to ensure no stale local messages remain, but preserve simulated ones
+        const isRealThread = (key: string) =>
+          !key.startsWith('group-') && !key.startsWith('sim-group-') && !key.startsWith('nb-');
+
+        // Merge Firestore state per-thread instead of nuking every real thread and
+        // replacing it. The old version deleted all local real threads on EVERY
+        // snapshot, which wiped optimistic messages that were still uploading
+        // (status 'sending'/'sent' with media not yet written) - so a message you
+        // just typed would visibly flash and vanish whenever any other message in
+        // any conversation changed, and any send that ultimately failed disappeared
+        // with no trace instead of staying visible as unsent.
         Object.keys(combined).forEach(key => {
-          if (!key.startsWith('group-') && !key.startsWith('sim-group-') && !key.startsWith('nb-')) {
+          if (!isRealThread(key)) return;
+          const serverList = grouped[key] || [];
+          const serverIds = new Set(serverList.map(m => m.id));
+          // Keep only local messages the server hasn't acknowledged yet.
+          const pendingLocal = (combined[key] || []).filter(
+            m => !serverIds.has(m.id) && (m.status === 'sending' || m.status === 'failed')
+          );
+          if (serverList.length === 0 && pendingLocal.length === 0) {
             delete combined[key];
+          } else {
+            combined[key] = [...serverList, ...pendingLocal].sort((a, b) => {
+              const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+              const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+              return ta - tb;
+            });
           }
         });
-        
-        // Merge the fresh real-time direct messages from Firestore
+
+        // Threads that exist only on the server (new incoming conversations).
         Object.keys(grouped).forEach(key => {
-          combined[key] = grouped[key];
+          if (!combined[key]) combined[key] = grouped[key];
         });
-        
+
         return combined;
       });
     }, (err) => {
@@ -3327,32 +3393,47 @@ export function useNearbyController() {
         // or from a demo distance value.
         const hasRealCoordinates = typeof u.latitude === 'number' && Number.isFinite(u.latitude)
           && typeof u.longitude === 'number' && Number.isFinite(u.longitude);
-        if (!hasRealCoordinates) return;
 
         const activeCoords = userCoords;
-        if (!activeCoords || !Number.isFinite(activeCoords.lat) || !Number.isFinite(activeCoords.lng)) return;
+        const haveMyCoords = Boolean(activeCoords) && Number.isFinite(activeCoords?.lat) && Number.isFinite(activeCoords?.lng);
 
         const locationUpdatedAt = u.locationUpdatedAt || null;
         const locationAgeMs = locationUpdatedAt ? Date.now() - new Date(locationUpdatedAt).getTime() : Infinity;
-        // Don't use stale locations for live nearby discovery. Existing friends/chats
-        // can still be kept elsewhere in the chat UI, but stale coordinates must not
-        // make someone appear physically nearby.
-        if (!Number.isFinite(locationAgeMs) || locationAgeMs > 5 * 60 * 1000) return;
+        const hasFreshLocation = Number.isFinite(locationAgeMs) && locationAgeMs <= 5 * 60 * 1000;
 
-        let distanceMeters = Math.round(calculateHaversineDistance(activeCoords.lat, activeCoords.lng, u.latitude, u.longitude));
-        let latOffset = (u.latitude - activeCoords.lat) * 12;
-        let lngOffset = (u.longitude - activeCoords.lng) * 12;
-        latOffset = Math.max(-0.45, Math.min(0.45, latOffset));
-        lngOffset = Math.max(-0.45, Math.min(0.45, lngOffset));
+        // `hasExistingChat` was computed above and then never actually used, and the
+        // proximity/staleness gates below `return`ed unconditionally. Net effect: a
+        // friend, someone with a pending friend request, or the person you are
+        // mid-conversation with vanished from `neighbors` the moment they stepped
+        // outside your radar radius or stopped publishing fresh GPS. That is what
+        // made accepted friends disappear, pending requests render as a nameless
+        // "Neighbor" placeholder, and open chat threads drop out of the chat list.
+        //
+        // Proximity is a DISCOVERY filter only. People you already have a
+        // relationship or a conversation with are always kept - they just show
+        // without a live distance when we can't compute a trustworthy one.
+        const isKnownContact = hasRelationship || hasExistingChat;
 
-        // 3. Proximity Filter: only genuine coordinates inside the user's radius.
-        const isWithinRadius = distanceMeters <= radarRadius;
-        if (!isWithinRadius) return;
+        const canComputeDistance = hasRealCoordinates && haveMyCoords && hasFreshLocation;
+        if (!canComputeDistance && !isKnownContact) return;
+
+        let distanceMeters: number | undefined = undefined;
+        let latOffset = 0;
+        let lngOffset = 0;
+        if (canComputeDistance) {
+          distanceMeters = Math.round(calculateHaversineDistance(activeCoords!.lat, activeCoords!.lng, u.latitude, u.longitude));
+          latOffset = Math.max(-0.45, Math.min(0.45, (u.latitude - activeCoords!.lat) * 12));
+          lngOffset = Math.max(-0.45, Math.min(0.45, (u.longitude - activeCoords!.lng) * 12));
+        }
+
+        // 3. Proximity Filter: only genuine coordinates inside the user's radius -
+        // but never used to evict an existing contact/conversation.
+        if (distanceMeters !== undefined && distanceMeters > radarRadius && !isKnownContact) return;
         
         // Ignore banned users
         if (u.banned === true || (u.reportsCount !== undefined && u.reportsCount >= 10)) return;
         
-        let walkingMins = Math.max(1, Math.ceil(distanceMeters / 78));
+        let walkingMins = distanceMeters !== undefined ? Math.max(1, Math.ceil(distanceMeters / 78)) : 1;
         
         realUsers.push({
           id: u.uid,
@@ -3381,6 +3462,7 @@ export function useNearbyController() {
           })(),
           latOffset: latOffset,
           lngOffset: lngOffset,
+          isOutsideRadar: !canComputeDistance || (distanceMeters !== undefined && distanceMeters > radarRadius),
           latitude: u.latitude !== undefined ? u.latitude : undefined,
           longitude: u.longitude !== undefined ? u.longitude : undefined,
           isFriend: isUserFriend,
@@ -5655,19 +5737,19 @@ export function useNearbyController() {
         await createNotification({
           userId: neighborId,
           senderId: currentUser.uid,
-          senderName: currentUser.name || 'A neighbor',
+          senderName: (userDisplayName || currentUser.displayName || 'A neighbor'),
           type: 'meetup',
           title: 'Meetup Completed',
-          message: `Your meetup with ${currentUser.name || 'A neighbor'} is complete!`
+          message: `Your meetup with ${(userDisplayName || currentUser.displayName || 'A neighbor')} is complete!`
         });
 
         await createNotification({
           userId: neighborId,
           senderId: currentUser.uid,
-          senderName: currentUser.name || 'A neighbor',
+          senderName: (userDisplayName || currentUser.displayName || 'A neighbor'),
           type: 'rating',
           title: 'New Rating',
-          message: `${currentUser.name || 'A neighbor'} rated you ${stars} stars!`
+          message: `${(userDisplayName || currentUser.displayName || 'A neighbor')} rated you ${stars} stars!`
         });
       } catch (notifErr) {
         console.warn("Failed to create rating / meetup notifications:", notifErr);
@@ -5716,7 +5798,7 @@ export function useNearbyController() {
         await createNotification({
           userId: neighborId,
           senderId: currentUser.uid,
-          senderName: currentUser.name || 'A neighbor',
+          senderName: (userDisplayName || currentUser.displayName || 'A neighbor'),
           type: 'meetup',
           title: 'Meetup Scheduled',
           message: `Scheduled a meetup at ${meetingPoint} on ${formattedTime}`
@@ -5866,6 +5948,22 @@ export function useNearbyController() {
     try {
       const userDocRef = doc(db, 'users', receiverId);
       await setDoc(userDocRef, { friendIds: arrayUnion(senderId) }, { merge: true });
+
+      // Best-effort: also add ourselves to the SENDER's friendIds while the request
+      // doc is still 'pending' - that is exactly the window in which the
+      // validFriendIdsAdd() rule permits this cross-account write. Doing it here
+      // makes the friendship mutual instantly, which matters because the DM rules
+      // require areFriends() on BOTH sides: without it, neither person can send a
+      // message until the sender's own client happens to be online to finalize,
+      // and the accepting user just sees "you can only message friends".
+      // If it is denied we simply fall through to the 'accepted' handshake below,
+      // which the sender's client completes later - so this can never make things
+      // worse, it only removes the wait in the common case.
+      try {
+        await setDoc(doc(db, 'users', senderId), { friendIds: arrayUnion(receiverId) }, { merge: true });
+      } catch (crossErr) {
+        console.warn("Immediate mutual friend write not permitted; deferring to sender-side finalize:", crossErr);
+      }
     } catch (e) {
       console.error("Firestore user sync friend union failed:", e);
       handleFirestoreError(e, OperationType.UPDATE, `users/${receiverId}`);
@@ -5891,10 +5989,10 @@ export function useNearbyController() {
       await createNotification({
         userId: senderId,
         senderId: receiverId,
-        senderName: currentUser.name || 'A neighbor',
+        senderName: (userDisplayName || currentUser.displayName || 'A neighbor'),
         type: 'friend_request',
         title: 'Friend Request Accepted',
-        message: `${currentUser.name || 'A neighbor'} accepted your friend request!`
+        message: `${(userDisplayName || currentUser.displayName || 'A neighbor')} accepted your friend request!`
       });
     } catch (notifErr) {
       console.warn("Failed to create friend request acceptance notification:", notifErr);
@@ -5941,12 +6039,17 @@ export function useNearbyController() {
         await handleAcceptFriendRequest(neighborId);
       } else if (sentFriendRequestIds.includes(neighborId)) {
         // Cancel request o!
+        setSentFriendRequestIds(prev => prev.filter(id => id !== neighborId));
         await deleteDoc(doc(db, 'friend_requests', `${currentUser.uid}_${neighborId}`));
         triggerBeep(320, 0.1, 'triangle');
         setAudioFeedback("Proximity connection request cancelled!");
         setTimeout(() => setAudioFeedback(""), 2000);
       } else {
         // Send connection request o!
+        if (neighborId === currentUser.uid) return; // never friend yourself
+        // Optimistic, so the button flips to "Requested" instantly instead of
+        // staying on "Add" and inviting a double-send.
+        setSentFriendRequestIds(prev => prev.includes(neighborId) ? prev : [...prev, neighborId]);
         const reqRef = doc(db, 'friend_requests', `${currentUser.uid}_${neighborId}`);
         await setDoc(reqRef, {
           senderId: currentUser.uid,
@@ -5959,10 +6062,10 @@ export function useNearbyController() {
         await createNotification({
           userId: neighborId,
           senderId: currentUser.uid,
-          senderName: currentUser.name || 'A neighbor',
+          senderName: (userDisplayName || currentUser.displayName || 'A neighbor'),
           type: 'friend_request',
           title: 'Friend Request',
-          message: `${currentUser.name || 'A neighbor'} sent you a friend request!`
+          message: `${(userDisplayName || currentUser.displayName || 'A neighbor')} sent you a friend request!`
         });
 
         setFriendsAddedTodayCount(prev => prev + 1);
@@ -5972,6 +6075,12 @@ export function useNearbyController() {
       }
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, `friend_action_${neighborId}`);
+      // Roll the optimistic flags back so the UI reflects reality rather than
+      // permanently showing "Requested" for a request that never got written.
+      setSentFriendRequestIds(prev => prev.filter(id => id !== neighborId));
+      const errMsg = err instanceof Error ? err.message : String(err);
+      setAudioFeedback(`⚠️ Friend action failed: ${errMsg}`);
+      setTimeout(() => setAudioFeedback(""), 5000);
     }
   }, [currentUser, friendIds, pendingFriendRequests, sentFriendRequestIds, triggerBeep, handleAcceptFriendRequest]);
 
@@ -6021,7 +6130,17 @@ export function useNearbyController() {
       const receiverId = currentUser.uid;
       const reqDocId = `${senderId}_${receiverId}`;
 
+      // Optimistically drop it from the list. Without this the declined request
+      // stayed on screen until the Firestore snapshot came back (and stayed
+      // forever if the delete failed), so people tapped Decline repeatedly.
+      setPendingFriendRequests(prev => prev.filter(id => id !== senderId));
+
       await deleteDoc(doc(db, 'friend_requests', reqDocId));
+      // Also clear the reverse doc if both sides happened to send a request,
+      // otherwise the declined person still shows as "pending" to the other.
+      try {
+        await deleteDoc(doc(db, 'friend_requests', `${receiverId}_${senderId}`));
+      } catch { /* usually doesn't exist - fine */ }
 
       triggerBeep(320, 0.1);
       const requester = neighbors.find(n => n.id === senderId);
