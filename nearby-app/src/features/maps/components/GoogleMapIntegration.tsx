@@ -234,7 +234,10 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
   // Filter neighbors locally based on the 8 criteria
   const mapFilteredNeighbors = useMemo(() => {
     return filteredNeighbors.filter(nb => {
-      if (nb.distanceMeters > filterDistance) return false;
+      // Unknown distance (no fresh GPS for that user) must not crash or silently
+      // drop them - `undefined > n` is false but `undefined` then flows into the
+      // marker render below and blows up on .toFixed()/arithmetic.
+      if (nb.distanceMeters !== undefined && nb.distanceMeters > filterDistance) return false;
       if (filterAge !== 'All' && nb.ageRange && nb.ageRange !== filterAge) return false;
       if (filterGender !== 'All' && nb.gender && nb.gender !== filterGender) return false;
       if (filterInterest !== 'All' && nb.interests && !nb.interests.includes(filterInterest)) return false;
@@ -996,9 +999,11 @@ const GoogleMapIntegration = React.memo(function GoogleMapIntegration({
                   
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5">
                     <span className="text-xs font-bold text-[#00AFEF] bg-[#00AFEF]/10 px-2.5 py-0.5 rounded-full">
-                      📍 {selectedNeighborForRoute.distanceMeters >= 1000 
-                        ? `${(selectedNeighborForRoute.distanceMeters / 1000).toFixed(1)} km` 
-                        : `${selectedNeighborForRoute.distanceMeters}m`} Away
+                      📍 {selectedNeighborForRoute.distanceMeters === undefined
+                        ? 'Distance unknown'
+                        : `${selectedNeighborForRoute.distanceMeters >= 1000
+                            ? `${(selectedNeighborForRoute.distanceMeters / 1000).toFixed(1)} km`
+                            : `${selectedNeighborForRoute.distanceMeters}m`} Away`}
                     </span>
                     
                     <div className="flex items-center text-amber-500 text-xs font-bold">
