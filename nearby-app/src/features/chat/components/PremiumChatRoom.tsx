@@ -1049,7 +1049,11 @@ export const PremiumChatRoom = React.memo(function PremiumChatRoom({
                             <span>{formatMessageTime(msg.timestamp)}</span>
                             {isMy && !msg.deletedForEveryone && (
                               <span className="flex items-center">
-                                {msg.status === 'sending' ? (
+                                {msg.status === 'failed' ? (
+                                  /* A failed send used to fall through to the blue double-tick,
+                                     i.e. a message that never left the device was displayed as READ. */
+                                  <span className="text-[10px] text-red-400 font-bold" title="Not sent">⚠️ Not sent</span>
+                                ) : msg.status === 'sending' ? (
                                   <span className="text-[11px] animate-spin">⏳</span>
                                 ) : msg.status === 'sent' ? (
                                   <Check className="w-[14px] h-[14px] text-neutral-300" />
