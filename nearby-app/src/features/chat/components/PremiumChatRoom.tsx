@@ -385,9 +385,12 @@ export const PremiumChatRoom = React.memo(function PremiumChatRoom({
   const slicedList = list.slice(-chatLimit);
 
   // Proximity details
-  const distanceStr = selectedNeighbor.distanceMeters
+  // Never invent a distance. The old fallback printed a hardcoded "320m Away"
+  // for anyone whose position we don't actually know - which is worse than
+  // saying nothing in an app whose entire premise is real physical proximity.
+  const distanceStr = selectedNeighbor.distanceMeters !== undefined
     ? (selectedNeighbor.distanceMeters < 1000 ? `${selectedNeighbor.distanceMeters}m Away` : `${(selectedNeighbor.distanceMeters/1000).toFixed(1)}km Away`)
-    : '320m Away';
+    : 'Distance unknown';
 
   const getTrustStars = (score?: number) => {
     if (selectedNeighbor.id === 'nb-myai') return '⭐⭐⭐⭐⭐';
