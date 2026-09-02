@@ -4,7 +4,10 @@ export interface Neighbor {
   username: string;
   avatarColor: string;
   avatarEmoji: string;
-  distanceMeters: number; // e.g. 150 (walk distance)
+  // Optional: we only know a real distance when both sides have fresh GPS. Friends
+  // and existing chat threads stay in the list without one instead of disappearing.
+  distanceMeters?: number; // e.g. 150 (walk distance)
+  isOutsideRadar?: boolean;
   streetName: string; // e.g. "Linden Ave, 3 mins walk"
   bio: string;
   interests: string[];
@@ -100,7 +103,7 @@ export interface DirectMessage {
   chatThreadId?: string;
   
   // WhatsApp Features
-  status?: 'sending' | 'sent' | 'delivered' | 'read';
+  status?: 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
   replyTo?: {
     msgId: string;
     text?: string;
