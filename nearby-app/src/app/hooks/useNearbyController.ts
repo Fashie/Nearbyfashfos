@@ -4372,28 +4372,35 @@ export function useNearbyController() {
         }
       }, 2000);
 
-      // 7. Whenever Caller generates an ICE candidate, update both documents under callerCandidates
+      // 7. Whenever Caller generates an ICE candidate, update both documents under callerCandidates.
+      // Uses setDoc+merge (not updateDoc) so it can never fail with "no document to update" —
+      // this makes candidate writes safe regardless of exactly when the base doc gets created below.
       pc.onicecandidate = async (event) => {
         if (event.candidate && currentUser) {
           const candStr = JSON.stringify(event.candidate.toJSON());
           try {
-            await updateDoc(doc(db, 'users', neighborId, 'calls', 'active'), {
+            await setDoc(doc(db, 'users', neighborId, 'calls', 'active'), {
               callerCandidates: arrayUnion(candStr)
-            });
-            await updateDoc(doc(db, 'users', currentUser.uid, 'calls', 'active'), {
+            }, { merge: true });
+            await setDoc(doc(db, 'users', currentUser.uid, 'calls', 'active'), {
               callerCandidates: arrayUnion(candStr)
-            });
+            }, { merge: true });
           } catch (candErr) {
             console.warn("Failed recording Caller ICE Candidate o:", candErr);
           }
         }
       };
 
-      // 8. Create the signaling docs FIRST (empty candidate arrays, no offer yet) so that
-      // onicecandidate above has somewhere to write to the instant ICE gathering starts.
-      // Doing this after setLocalDescription (as before) meant early candidates either
-      // failed to write (doc didn't exist yet) or got wiped out when this initial
-      // setDoc ran afterward and reset callerCandidates back to [].
+      // 8. Create the SDP offer BEFORE writing to Firestore, so the receiver can never read
+      // the doc mid-flight with offerSdp missing/undefined.
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      // 9. Write everything atomically in one shot per doc, offer included from the start.
+      // Deliberately NOT setting callerCandidates/receiverCandidates here (not even to []) —
+      // any of those fields getting written as a literal value in a merge write REPLACES the
+      // whole array, which would wipe out real candidates if one already landed via arrayUnion
+      // a few ms earlier. Leaving them unset lets arrayUnion create the array on first use.
       if (currentUser) {
         await setDoc(doc(db, 'users', neighborId, 'calls', 'active'), {
           callerId: currentUser.uid,
@@ -4401,38 +4408,22 @@ export function useNearbyController() {
           type,
           status: 'ringing',
           incoming: true,
-          callerCandidates: [],
-          receiverCandidates: [],
+          offerSdp: offer.sdp,
+          offerType: offer.type,
           callId,
           createdAt: new Date().toISOString()
-        });
+        }, { merge: true });
 
         await setDoc(doc(db, 'users', currentUser.uid, 'calls', 'active'), {
           receiverId: neighborId,
           type,
           status: 'ringing',
           incoming: false,
-          callerCandidates: [],
-          receiverCandidates: [],
+          offerSdp: offer.sdp,
+          offerType: offer.type,
           callId,
           createdAt: new Date().toISOString()
-        });
-      }
-
-      // 9. NOW create the SDP offer — onicecandidate can safely fire from here on
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      // 10. Patch the offer into both docs (candidates already flowing in independently)
-      if (currentUser) {
-        await updateDoc(doc(db, 'users', neighborId, 'calls', 'active'), {
-          offerSdp: offer.sdp,
-          offerType: offer.type
-        });
-        await updateDoc(doc(db, 'users', currentUser.uid, 'calls', 'active'), {
-          offerSdp: offer.sdp,
-          offerType: offer.type
-        });
+        }, { merge: true });
       }
     } catch (gUerr) {
       console.error("Camera/Mic WebRTC setup failed:", gUerr);
@@ -4503,6 +4494,13 @@ export function useNearbyController() {
         const callData = activeDocSnap.data();
         const offerSdp = callData.offerSdp;
         const offerType = callData.offerType || 'offer';
+
+        if (!offerSdp) {
+          console.error("No offerSdp found on active call doc — cannot answer yet.");
+          setAudioFeedback("Call info still loading, try answering again in a moment.");
+          setTimeout(() => setAudioFeedback(""), 3000);
+          return;
+        }
 
         // 1. Get user media
         const constraints = {
@@ -4626,17 +4624,18 @@ export function useNearbyController() {
           }
         }, 2000);
 
-        // 7. Whenever Receiver generates an ICE candidate, write candidate to both docs
+        // 7. Whenever Receiver generates an ICE candidate, write candidate to both docs.
+        // setDoc+merge instead of updateDoc, same reasoning as the caller side.
         pc.onicecandidate = async (event) => {
           if (event.candidate && currentUser) {
             const candStr = JSON.stringify(event.candidate.toJSON());
             try {
-              await updateDoc(doc(db, 'users', callState.neighborId, 'calls', 'active'), {
+              await setDoc(doc(db, 'users', callState.neighborId, 'calls', 'active'), {
                 receiverCandidates: arrayUnion(candStr)
-              });
-              await updateDoc(doc(db, 'users', currentUser.uid, 'calls', 'active'), {
+              }, { merge: true });
+              await setDoc(doc(db, 'users', currentUser.uid, 'calls', 'active'), {
                 receiverCandidates: arrayUnion(candStr)
-              });
+              }, { merge: true });
             } catch (candErr) {
               console.warn("Failed recording Receiver ICE Candidate o:", candErr);
             }
@@ -4648,6 +4647,22 @@ export function useNearbyController() {
           type: offerType as 'offer',
           sdp: offerSdp
         }));
+
+        // 8b. Hydrate any of the caller's candidates that were already sitting in Firestore
+        // before we got here (the global onSnapshot listener should have queued these already,
+        // but reading them directly off callData too is cheap, safe insurance — duplicate
+        // addIceCandidate calls for the same candidate are harmless).
+        const existingCallerCandidates: string[] = callData.callerCandidates || [];
+        for (const candStr of existingCallerCandidates) {
+          try {
+            const candData = JSON.parse(candStr);
+            if (candData) {
+              await pc.addIceCandidate(new RTCIceCandidate(candData));
+            }
+          } catch (e) {
+            console.warn("Error hydrating existing caller candidate:", e);
+          }
+        }
 
         if (queuedCandidatesRef.current.length > 0) {
           console.log("Draining queued candidates on Receiver...");
