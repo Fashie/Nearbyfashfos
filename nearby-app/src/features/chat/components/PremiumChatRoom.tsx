@@ -494,7 +494,7 @@ export const PremiumChatRoom = React.memo(function PremiumChatRoom({
                 <span>{distanceStr}</span>
                 <span>•</span>
                 <span className="text-amber-500 dark:text-amber-400 font-bold">
-                  🛡️ {selectedNeighbor.trustScore || selectedNeighbor.trustRating || 95}%
+                  ⭐ {(selectedNeighbor.trustScore !== undefined ? selectedNeighbor.trustScore : 5.0).toFixed(1)}
                 </span>
               </div>
             </div>
