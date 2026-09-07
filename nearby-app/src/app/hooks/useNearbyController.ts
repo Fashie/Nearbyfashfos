@@ -4140,7 +4140,10 @@ export function useNearbyController() {
   };
 
   const playVoiceNote = (msg: DirectMessage, senderDisplayName: string) => {
-    if (msg.mediaUrl && (msg.mediaUrl.startsWith('data:audio') || msg.mediaUrl.startsWith('blob:'))) {
+    // Real recordings end up as data:/blob: URLs before upload, and as https:// Cloudinary
+    // URLs once persisted via saveOrUpdateMessageInFirestore - all three are real audio.
+    // Only fall back to the TTS placeholder when there's genuinely no media at all.
+    if (msg.mediaUrl && (msg.mediaUrl.startsWith('data:audio') || msg.mediaUrl.startsWith('blob:') || msg.mediaUrl.startsWith('http'))) {
       try {
         const audio = new Audio(msg.mediaUrl);
         audio.play();
