@@ -1772,7 +1772,7 @@ const ExploreTab = React.memo(function ExploreTab({
                                     {nb.name}
                                   </h3>
                                   <span className="text-[9px] font-black text-[#0F8A5F] bg-[#0F8A5F]/10 px-2 py-0.5 rounded-md border border-[#0F8A5F]/15 shrink-0">
-                                    ⭐ {nb.trustScore || 96}% Trust
+                                    ⭐ {(nb.trustScore !== undefined ? nb.trustScore : 5.0).toFixed(1)}
                                   </span>
                                 </div>
                                 <p className="text-[10px] text-zinc-400 mt-0.5 font-sans">@{nb.username}</p>
