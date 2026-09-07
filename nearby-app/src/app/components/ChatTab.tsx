@@ -694,9 +694,9 @@ export default function ChatTab() {
                                 {/* Right Side Badges */}
                                 <div className="flex items-center space-x-2 flex-shrink-0">
                                   {/* Trust Badge (Optional) */}
-                                  {nb.trustScore && (
+                                  {nb.trustScore !== undefined && (
                                     <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/10 text-[#0F8A5F] font-extrabold">
-                                      {nb.trustScore}% 🛡️
+                                      ⭐ {nb.trustScore.toFixed(1)}
                                     </span>
                                   )}
                                   
