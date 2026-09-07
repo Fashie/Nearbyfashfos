@@ -2642,51 +2642,32 @@ export function useNearbyController() {
         }
 
         // 3. ICE Candidate Sync depending on our Role (Caller/Receiver)
-        if (pcRef.current) {
-          if (data.incoming) {
-            // We are the Receiver; we listen for Caller's candidates
-            const callerCands = data.callerCandidates || [];
-            if (callerCands.length > remoteCandidatesAddedRef.current) {
-              const startIdx = remoteCandidatesAddedRef.current;
-              for (let i = startIdx; i < callerCands.length; i++) {
-                try {
-                  const candData = JSON.parse(callerCands[i]);
-                  if (candData) {
-                    const rtcCand = new RTCIceCandidate(candData);
-                    if (pcRef.current.remoteDescription) {
-                      await pcRef.current.addIceCandidate(rtcCand);
-                    } else {
-                      queuedCandidatesRef.current.push(rtcCand);
-                    }
+        // NOTE: this must NOT be gated behind `if (pcRef.current)` — candidates routinely
+        // arrive while the phone is still ringing, before pcRef.current exists (it's only
+        // created once the user taps Answer/Call). Gating the whole block meant those
+        // candidates were silently dropped AND the seen-counter never advanced, so they
+        // could never be recovered later either. We now always advance the counter and
+        // queue whatever we can't apply yet, regardless of pc state.
+        {
+          const relevantCands = data.incoming ? (data.callerCandidates || []) : (data.receiverCandidates || []);
+          if (relevantCands.length > remoteCandidatesAddedRef.current) {
+            const startIdx = remoteCandidatesAddedRef.current;
+            for (let i = startIdx; i < relevantCands.length; i++) {
+              try {
+                const candData = JSON.parse(relevantCands[i]);
+                if (candData) {
+                  const rtcCand = new RTCIceCandidate(candData);
+                  if (pcRef.current && pcRef.current.remoteDescription) {
+                    await pcRef.current.addIceCandidate(rtcCand);
+                  } else {
+                    queuedCandidatesRef.current.push(rtcCand);
                   }
-                } catch (iceErr) {
-                  console.warn("Receiver adding ICE candidate failed:", iceErr);
                 }
+              } catch (iceErr) {
+                console.warn(data.incoming ? "Receiver adding ICE candidate failed:" : "Caller adding ICE candidate failed:", iceErr);
               }
-              remoteCandidatesAddedRef.current = callerCands.length;
             }
-          } else {
-            // We are the Caller; we listen for Receiver's candidates
-            const receiverCands = data.receiverCandidates || [];
-            if (receiverCands.length > remoteCandidatesAddedRef.current) {
-              const startIdx = remoteCandidatesAddedRef.current;
-              for (let i = startIdx; i < receiverCands.length; i++) {
-                try {
-                  const candData = JSON.parse(receiverCands[i]);
-                  if (candData) {
-                    const rtcCand = new RTCIceCandidate(candData);
-                    if (pcRef.current.remoteDescription) {
-                      await pcRef.current.addIceCandidate(rtcCand);
-                    } else {
-                      queuedCandidatesRef.current.push(rtcCand);
-                    }
-                  }
-                } catch (iceErr) {
-                  console.warn("Caller adding ICE candidate failed:", iceErr);
-                }
-              }
-              remoteCandidatesAddedRef.current = receiverCands.length;
-            }
+            remoteCandidatesAddedRef.current = relevantCands.length;
           }
         }
 
@@ -4325,6 +4306,7 @@ export function useNearbyController() {
           setRemoteStream(event.streams[0]);
           if (remoteVideoRef.current) {
             remoteVideoRef.current.srcObject = event.streams[0];
+            remoteVideoRef.current.play().catch((playErr) => console.warn("WebRTC Caller: remote play() blocked by browser:", playErr));
           }
         }
       };
@@ -4407,11 +4389,11 @@ export function useNearbyController() {
         }
       };
 
-      // 8. Create SDP Offer
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      // 9. Write signaling fields to Firestore
+      // 8. Create the signaling docs FIRST (empty candidate arrays, no offer yet) so that
+      // onicecandidate above has somewhere to write to the instant ICE gathering starts.
+      // Doing this after setLocalDescription (as before) meant early candidates either
+      // failed to write (doc didn't exist yet) or got wiped out when this initial
+      // setDoc ran afterward and reset callerCandidates back to [].
       if (currentUser) {
         await setDoc(doc(db, 'users', neighborId, 'calls', 'active'), {
           callerId: currentUser.uid,
@@ -4419,8 +4401,6 @@ export function useNearbyController() {
           type,
           status: 'ringing',
           incoming: true,
-          offerSdp: offer.sdp,
-          offerType: offer.type,
           callerCandidates: [],
           receiverCandidates: [],
           callId,
@@ -4432,12 +4412,26 @@ export function useNearbyController() {
           type,
           status: 'ringing',
           incoming: false,
-          offerSdp: offer.sdp,
-          offerType: offer.type,
           callerCandidates: [],
           receiverCandidates: [],
           callId,
           createdAt: new Date().toISOString()
+        });
+      }
+
+      // 9. NOW create the SDP offer — onicecandidate can safely fire from here on
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      // 10. Patch the offer into both docs (candidates already flowing in independently)
+      if (currentUser) {
+        await updateDoc(doc(db, 'users', neighborId, 'calls', 'active'), {
+          offerSdp: offer.sdp,
+          offerType: offer.type
+        });
+        await updateDoc(doc(db, 'users', currentUser.uid, 'calls', 'active'), {
+          offerSdp: offer.sdp,
+          offerType: offer.type
         });
       }
     } catch (gUerr) {
@@ -4566,6 +4560,7 @@ export function useNearbyController() {
             setRemoteStream(event.streams[0]);
             if (remoteVideoRef.current) {
               remoteVideoRef.current.srcObject = event.streams[0];
+              remoteVideoRef.current.play().catch((playErr) => console.warn("WebRTC Receiver: remote play() blocked by browser:", playErr));
             }
           }
         };
