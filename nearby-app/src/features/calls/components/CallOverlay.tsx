@@ -64,8 +64,9 @@ export function CallOverlay({
       exit={{ opacity: 0 }}
       className="absolute inset-0 bg-[#0A0B0D] z-50 flex flex-col justify-between text-white overflow-hidden font-sans"
     >
-      {/* Invisible pipelines for WebRTC stream mapping */}
-      <div className="hidden">
+      {/* Invisible pipelines for WebRTC stream mapping — must stay rendered (not display:none)
+          or browsers will suppress/throttle the remote audio track */}
+      <div className="absolute w-px h-px overflow-hidden opacity-0 pointer-events-none" aria-hidden="true">
         <video ref={localVideoRef} autoPlay playsInline muted />
         <video ref={remoteVideoRef} autoPlay playsInline />
       </div>
