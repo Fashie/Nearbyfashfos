@@ -164,12 +164,25 @@ export default function CallScreenOverlay() {
           exit={{ opacity: 0 }}
           className="absolute inset-0 bg-[#0A0B0D] z-50 flex flex-col justify-between text-white overflow-hidden font-sans"
         >
-          {/* Invisible pipelines for WebRTC stream mapping — must stay rendered (not display:none)
-              or browsers will suppress/throttle the remote audio track */}
+          {/* Local camera preview pipeline (muted, video only — no audio to carry) */}
           <div className="absolute w-px h-px overflow-hidden opacity-0 pointer-events-none" aria-hidden="true">
             <video ref={localVideoRef} autoPlay playsInline muted />
-            <video ref={remoteVideoRef} autoPlay playsInline />
           </div>
+
+          {/* Dedicated, always-mounted audio pipe for the remote stream — carries audio for
+              BOTH call types. Kept as its own <audio> element (not sharing a ref with any
+              <video> tag) so it can never be affected by the visible video element mounting,
+              unmounting, or being toggled by call type/status. */}
+          <audio
+            autoPlay
+            playsInline
+            ref={(el) => {
+              if (el && remoteStream && el.srcObject !== remoteStream) {
+                el.srcObject = remoteStream;
+                el.play().catch((err) => console.warn("Remote audio play() blocked:", err));
+              }
+            }}
+          />
 
           {/* BACKGROUND: Glassmorphic ambient gradient blur of Neighbor's colors */}
           {(() => {
