@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   PhoneOff, Phone, MicOff, Mic, WifiOff, Camera, RefreshCw, 
@@ -55,7 +55,29 @@ export function CallOverlay({
   endCall,
   answerIncomingCall,
 }: CallOverlayProps) {
-  const ringNeighbor = neighbors.find(n => n.id === callState.neighborId);
+  const ringNeighbor = neighbors.find(n => n.id === callState.neighborId) || {
+    id: callState.neighborId,
+    name: 'Nearby Friend',
+    username: 'friend',
+    avatarEmoji: '👤',
+    avatarColor: 'bg-emerald-600',
+    streetName: 'Nearby',
+    customProfilePhoto: undefined as string | undefined,
+    trustScore: 5.0,
+    distanceMeters: undefined as number | undefined
+  };
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    if (audioRef.current && remoteStream) {
+      if (audioRef.current.srcObject !== remoteStream) {
+        audioRef.current.srcObject = remoteStream;
+      }
+      audioRef.current.volume = isSpeakerOn ? 1.0 : 0.25;
+      audioRef.current.play().catch((err) => console.warn("Remote audio play() blocked:", err));
+    }
+  }, [remoteStream, callState.status, isSpeakerOn]);
 
   return (
     <motion.div
@@ -69,17 +91,11 @@ export function CallOverlay({
         <video ref={localVideoRef} autoPlay playsInline muted />
       </div>
 
-      {/* Dedicated, always-mounted audio pipe for the remote stream — carries audio for
-          BOTH call types, independent of the visible video element's mount/unmount cycle. */}
+      {/* Dedicated, always-mounted audio pipe for the remote stream */}
       <audio
+        ref={audioRef}
         autoPlay
         playsInline
-        ref={(el) => {
-          if (el && remoteStream && el.srcObject !== remoteStream) {
-            el.srcObject = remoteStream;
-            el.play().catch((err) => console.warn("Remote audio play() blocked:", err));
-          }
-        }}
       />
 
       {/* BACKGROUND: Glassmorphic ambient gradient blur of Neighbor's colors */}
@@ -135,7 +151,7 @@ export function CallOverlay({
         <div className="flex-1 flex flex-col items-center justify-center py-4 relative">
           
           {/* VOICE CALL OR RINGING STATE: Large elegant card layout */}
-          {(callState.type === 'audio' || callState.status === 'ringing') && ringNeighbor && (
+          {(callState.type === 'audio' || callState.status === 'ringing') && (
             <div className="flex flex-col items-center space-y-6 text-center max-w-sm w-full">
               <div className="relative">
                 <AnimatePresence>
