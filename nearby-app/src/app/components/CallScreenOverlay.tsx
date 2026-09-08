@@ -247,8 +247,15 @@ export default function CallScreenOverlay() {
               
               {/* VOICE CALL OR RINGING STATE: Large elegant card layout */}
               {(callState.type === 'audio' || callState.status === 'ringing') && (() => {
-                const ringNeighbor = neighbors.find(n => n.id === callState.neighborId);
-                if (!ringNeighbor) return null;
+                const ringNeighbor = neighbors.find(n => n.id === callState.neighborId) || {
+                  id: callState.neighborId,
+                  name: 'Nearby Friend',
+                  username: 'friend',
+                  avatarEmoji: '👤',
+                  avatarColor: 'bg-emerald-600',
+                  streetName: 'Nearby',
+                  customProfilePhoto: undefined as string | undefined
+                };
 
                 return (
                   <div className="flex flex-col items-center space-y-6 text-center max-w-sm w-full">
@@ -351,7 +358,9 @@ export default function CallScreenOverlay() {
               {callState.type === 'video' && callState.status === 'connected' && (
                 <div className="w-full h-full flex-1 min-h-[300px] max-h-[520px] bg-neutral-900 rounded-[32px] relative overflow-hidden border border-white/10 shadow-2xl flex items-center justify-center z-10">
                   
-                  {/* Remote video (opponent camera stream) */}
+                  {/* Remote video (opponent camera stream) — muted because the dedicated
+                      <audio> element elsewhere in this component already plays this same
+                      stream's audio; leaving this unmuted doubles it up and causes echo. */}
                   <video
                     ref={(el) => {
                       remoteVideoRef.current = el;
@@ -361,6 +370,7 @@ export default function CallScreenOverlay() {
                     }}
                     autoPlay
                     playsInline
+                    muted
                     className="absolute inset-0 w-full h-full object-cover z-0"
                   />
 
