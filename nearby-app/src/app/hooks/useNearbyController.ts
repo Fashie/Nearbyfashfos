@@ -4158,8 +4158,13 @@ export function useNearbyController() {
       }
     }
 
+    if (!friendIds.includes(neighborId) && !neighborId.startsWith('nb-')) {
+      setAudioFeedback("🔒 You can only call friends! Send a friend request first.");
+      setTimeout(() => setAudioFeedback(""), 4000);
+      return;
+    }
+
     const target = neighbors.find(n => n.id === neighborId);
-    if (!target) return;
     
     const callId = `call-${Date.now()}`;
     triggerBeep(580, 0.15, 'triangle');
@@ -4278,6 +4283,7 @@ export function useNearbyController() {
           { urls: 'stun:stun2.l.google.com:19302' },
           { urls: 'stun:stun3.l.google.com:19302' },
           { urls: 'stun:stun4.l.google.com:19302' },
+          { urls: 'stun:stun.cloudflare.com:3478' },
           { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
           { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
           { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
@@ -4290,16 +4296,22 @@ export function useNearbyController() {
         pc.addTrack(track, stream);
       });
 
-      // 4. Handle incoming remote stream tracks
+      // 4. Handle incoming remote stream tracks (with Unified Plan individual track fallback)
       pc.ontrack = (event) => {
-        console.log("WebRTC Caller: Remote track received o!", event.streams);
-        if (event.streams && event.streams[0]) {
-          remoteStreamRef.current = event.streams[0];
-          setRemoteStream(event.streams[0]);
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = event.streams[0];
-            remoteVideoRef.current.play().catch((playErr) => console.warn("WebRTC Caller: remote play() blocked by browser:", playErr));
-          }
+        console.log("WebRTC Caller: Remote track received o!", event.streams, event.track);
+        const incomingStream = (event.streams && event.streams[0])
+          ? event.streams[0]
+          : (remoteStreamRef.current || new MediaStream());
+
+        if (!event.streams || !event.streams[0]) {
+          incomingStream.addTrack(event.track);
+        }
+
+        remoteStreamRef.current = incomingStream;
+        setRemoteStream(incomingStream);
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = incomingStream;
+          remoteVideoRef.current.play().catch((playErr) => console.warn("WebRTC Caller: remote play() blocked by browser:", playErr));
         }
       };
 
@@ -4530,6 +4542,7 @@ export function useNearbyController() {
             { urls: 'stun:stun2.l.google.com:19302' },
             { urls: 'stun:stun3.l.google.com:19302' },
             { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:stun.cloudflare.com:3478' },
             { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
             { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
             { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
@@ -4542,16 +4555,22 @@ export function useNearbyController() {
           pc.addTrack(track, stream);
         });
 
-        // 4. Handle remote incoming tracks
+        // 4. Handle remote incoming tracks (with Unified Plan individual track fallback)
         pc.ontrack = (event) => {
-          console.log("WebRTC Receiver: Remote track received o!", event.streams);
-          if (event.streams && event.streams[0]) {
-            remoteStreamRef.current = event.streams[0];
-            setRemoteStream(event.streams[0]);
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = event.streams[0];
-              remoteVideoRef.current.play().catch((playErr) => console.warn("WebRTC Receiver: remote play() blocked by browser:", playErr));
-            }
+          console.log("WebRTC Receiver: Remote track received o!", event.streams, event.track);
+          const incomingStream = (event.streams && event.streams[0])
+            ? event.streams[0]
+            : (remoteStreamRef.current || new MediaStream());
+
+          if (!event.streams || !event.streams[0]) {
+            incomingStream.addTrack(event.track);
+          }
+
+          remoteStreamRef.current = incomingStream;
+          setRemoteStream(incomingStream);
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = incomingStream;
+            remoteVideoRef.current.play().catch((playErr) => console.warn("WebRTC Receiver: remote play() blocked by browser:", playErr));
           }
         };
 
