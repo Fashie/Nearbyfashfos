@@ -153,6 +153,19 @@ export default function CallScreenOverlay() {
     toggleVideoOff,
   } = useNearbyRuntime();
 
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Keep remote audio stream attached and volume synchronized
+  useEffect(() => {
+    if (audioRef.current && remoteStream) {
+      if (audioRef.current.srcObject !== remoteStream) {
+        audioRef.current.srcObject = remoteStream;
+      }
+      audioRef.current.volume = isSpeakerOn ? 1.0 : 0.25;
+      audioRef.current.play().catch((err) => console.warn("Remote audio play() blocked:", err));
+    }
+  }, [remoteStream, callState.status, isSpeakerOn]);
+
   return (
     <>
       {/* IMMERSIVE AUDIO / VIDEO CALL SCREEN (WebRTC overlay)  */}
@@ -174,14 +187,9 @@ export default function CallScreenOverlay() {
               <video> tag) so it can never be affected by the visible video element mounting,
               unmounting, or being toggled by call type/status. */}
           <audio
+            ref={audioRef}
             autoPlay
             playsInline
-            ref={(el) => {
-              if (el && remoteStream && el.srcObject !== remoteStream) {
-                el.srcObject = remoteStream;
-                el.play().catch((err) => console.warn("Remote audio play() blocked:", err));
-              }
-            }}
           />
 
           {/* BACKGROUND: Glassmorphic ambient gradient blur of Neighbor's colors */}
