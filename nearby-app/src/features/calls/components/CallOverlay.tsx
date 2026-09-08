@@ -228,7 +228,8 @@ export function CallOverlay({
           {callState.type === 'video' && callState.status === 'connected' && (
             <div className="w-full h-full flex-1 min-h-[300px] max-h-[520px] bg-neutral-900 rounded-[32px] relative overflow-hidden border border-white/10 shadow-2xl flex items-center justify-center z-10">
               
-              {/* Remote video (opponent camera stream) */}
+              {/* Remote video (opponent camera stream) — muted, dedicated <audio> element
+                  elsewhere in this component already plays this stream's audio. */}
               <video
                 ref={(el) => {
                   if (remoteVideoRef.current !== el) {
@@ -240,6 +241,7 @@ export function CallOverlay({
                 }}
                 autoPlay
                 playsInline
+                muted
                 className="absolute inset-0 w-full h-full object-cover z-0"
               />
 
