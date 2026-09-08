@@ -3980,18 +3980,10 @@ export function useNearbyController() {
           }
         }
 
-        // B. Ghost Call Check: Periodically verify if the active call document exists in Firestore
-        if (currentUser && !callState.neighborId.startsWith('nb-')) {
-          try {
-            const activeDocSnap = await getDoc(doc(db, 'users', currentUser.uid, 'calls', 'active'));
-            if (!activeDocSnap.exists()) {
-              console.log("Call Watchdog: No active call document found in Firestore. Ending ghost call.");
-              endCall('completed');
-            }
-          } catch (err) {
-            console.warn("Call Watchdog: Heartbeat Firestore fetch failed (likely offline fallback):", err);
-          }
-        }
+        // B. Ghost Call Check removed — the onSnapshot listener above already handles the
+        // doc-deleted case in real time (see the `!snap.exists()` branch), so this redundant
+        // getDoc poll only added a chance of a false-positive premature disconnect from a
+        // stale/racy one-off read colliding with a real write (e.g. right as someone answers).
       }, 5000);
     }
 
