@@ -4641,10 +4641,10 @@ export function useNearbyController() {
         }));
 
         // 8b. Hydrate any of the caller's candidates that were already sitting in Firestore
-        // before we got here (the global onSnapshot listener should have queued these already,
-        // but reading them directly off callData too is cheap, safe insurance — duplicate
-        // addIceCandidate calls for the same candidate are harmless).
-        const existingCallerCandidates: string[] = callData.callerCandidates || [];
+        // before we got here. Guarded with Array.isArray — if this field is ever missing,
+        // stale, or shaped unexpectedly, this must degrade gracefully rather than throw and
+        // abort the whole answer flow (a crash here was killing every single answer attempt).
+        const existingCallerCandidates: string[] = Array.isArray(callData.callerCandidates) ? callData.callerCandidates : [];
         for (const candStr of existingCallerCandidates) {
           try {
             const candData = JSON.parse(candStr);
@@ -4656,9 +4656,10 @@ export function useNearbyController() {
           }
         }
 
-        if (queuedCandidatesRef.current.length > 0) {
+        const queuedList = Array.isArray(queuedCandidatesRef.current) ? queuedCandidatesRef.current : [];
+        if (queuedList.length > 0) {
           console.log("Draining queued candidates on Receiver...");
-          for (const cand of queuedCandidatesRef.current) {
+          for (const cand of queuedList) {
             try {
               await pc.addIceCandidate(cand);
             } catch (e) {
