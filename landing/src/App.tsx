@@ -16,7 +16,6 @@ import {
 } from 'lucide-react';
 
 const NEARBY_APP_URL = 'https://nearby.fashfos.com';
-const REFERRAL_APP_URL = '/referralgames/';
 
 function RadarVisual() {
   const dots = [
@@ -253,9 +252,9 @@ function HowItWorks() {
 }
 
 const referralSteps = [
-  { icon: Gift, title: 'Get your code', body: 'Every Nearby account comes with a unique referral link, ready to share.' },
-  { icon: Users, title: 'Invite your people', body: 'Share it with friends — when they join and get active, you both score points.' },
-  { icon: Trophy, title: 'Climb & cash out', body: 'Earn milestones, land on leaderboards, and redeem real payouts as you go.' },
+  { icon: Gift, title: 'Get your code', body: 'Open Rewards & Invites inside the Nearby app to find your personal code and invite link.' },
+  { icon: Users, title: 'Invite your people', body: 'Share your link with friends. A referral counts once they accept the terms and complete their profile.' },
+  { icon: Trophy, title: 'Climb & cash out', body: 'Unlock milestone rewards, join a squad, top the leaderboards, and withdraw your earnings to your bank.' },
 ];
 
 function ReferralSection() {
@@ -264,12 +263,12 @@ function ReferralSection() {
       <div className="text-center max-w-2xl mx-auto space-y-3 mb-12">
         <div className="inline-flex items-center gap-2 bg-[#EAF0FF] text-[var(--color-secondary)] text-[13px] font-semibold px-3 py-1.5 rounded-full mb-1">
           <Gift className="w-3.5 h-3.5" />
-          Nearby Referral & Games Hub
+          Nearby Rewards
         </div>
         <h2 className="text-[28px] sm:text-[34px] font-bold tracking-tight">Bring friends, earn rewards</h2>
         <p className="text-[16px] text-[var(--color-text-secondary)] leading-relaxed">
-          Referring people to Nearby isn't just a link — it's its own hub with milestones,
-          team challenges, and leaderboards for the most active connectors.
+          Rewards are built right into the Nearby app. Invite friends and unlock milestones,
+          squad challenges, leaderboards, and campus treasure hunts — all in one place.
         </p>
       </div>
 
@@ -290,10 +289,10 @@ function ReferralSection() {
 
       <div className="flex justify-center">
         <a
-          href={REFERRAL_APP_URL}
+          href={NEARBY_APP_URL}
           className="inline-flex items-center gap-2 bg-[var(--color-secondary)] hover:bg-[var(--color-secondary)]/90 text-white font-semibold text-[15px] px-6 py-3.5 rounded-[18px] transition-premium shadow-[var(--shadow-soft-md)]"
         >
-          Open the Referral Hub
+          Open Nearby to get your code
           <ArrowRight className="w-4 h-4" />
         </a>
       </div>
@@ -357,7 +356,7 @@ function Footer() {
         </div>
         <div className="flex items-center gap-6">
           <a href={NEARBY_APP_URL} className="hover:text-[var(--color-text-primary)] transition-premium">Open app</a>
-          <a href={REFERRAL_APP_URL} className="hover:text-[var(--color-text-primary)] transition-premium">Referral</a>
+          <a href="#referral" className="hover:text-[var(--color-text-primary)] transition-premium">Rewards</a>
           <a href="#safety" className="hover:text-[var(--color-text-primary)] transition-premium">Safety</a>
         </div>
       </div>
